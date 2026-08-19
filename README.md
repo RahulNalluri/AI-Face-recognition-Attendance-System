@@ -1,7 +1,5 @@
 # AI-Based Face Recognition Attendance System
 
-Final-year project for automated attendance using face detection, image preprocessing, and neural-network-based classification.
-
 ## Repository layout
 
 - `src/` — dataset preparation, augmentation, and training scripts
