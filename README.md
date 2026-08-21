@@ -128,6 +128,29 @@ calibration simulates unknown users by excluding each validation identity from
 the comparison. A final deployment threshold still requires testing with
 genuinely unenrolled, consented participants.
 
+### 5. Run real-time webcam recognition
+
+Start the default webcam with temporal confirmation and automatic unknown-person
+rejection:
+
+```bash
+python src/realtime_recognition.py
+```
+
+Press `Q` or `Esc` to stop. Use another camera with `--source 1`, or test a
+recorded video with `--source path/to/video.mp4`. The default pipeline processes
+every second frame, confirms an identity across three observations, and applies
+a ten-second event cooldown. These controls can be adjusted:
+
+```bash
+python src/realtime_recognition.py --process-every 2 --confirmation-frames 3 --cooldown-seconds 10
+```
+
+Confirmed events are stored locally in
+`artifacts/realtime/recognition_events.jsonl`. Camera frames are displayed but
+are not saved. Event logging can be disabled with `--no-event-log`, and systems
+without a display can use `--headless`.
+
 The current internal evaluation reached 96.15% validation accuracy and 100%
 accuracy on 25 held-out originals. Because the test set is small, these figures
 describe only the current dataset and must not be interpreted as universal
