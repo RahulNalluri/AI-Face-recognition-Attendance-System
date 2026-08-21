@@ -1,6 +1,6 @@
-numpy
-opencv-python
-scikit-learn
-tensorflow
-matplotlib
-Pillow
+numpy>=1.26,<3
+opencv-python>=4.9,<5
+scikit-learn>=1.4,<2
+tensorflow>=2.16,<3
+matplotlib>=3.8,<4
+Pillow>=10,<13
