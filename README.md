@@ -31,6 +31,14 @@ dropout, global average pooling, and a four-class Softmax output. Early stopping
 learning-rate reduction, and best-checkpoint selection are based on validation
 loss. Final metrics are calculated on held-out original test photographs.
 
+### Phase 3 — Face-focused few-shot recognition
+
+YuNet detects facial landmarks and aligns each face before recognition. A
+pretrained SFace neural network converts the aligned face into a compact
+embedding, allowing a new identity to be enrolled from a small local image set.
+The local embeddings, labels, downloaded weights, and photographs remain
+excluded from Git.
+
 ## CNN architecture
 
 ```text
@@ -95,6 +103,28 @@ per-class precision, recall, F1-score, and final test accuracy.
 ```bash
 python src/predict_cnn.py path/to/face.jpg
 ```
+
+### 4. Train the face-specific few-shot classifier
+
+Download the public OpenCV face models, create aligned crops while preserving
+the existing splits, and build the local classifier:
+
+```bash
+python src/download_face_models.py
+python src/build_face_cropped_dataset.py --overwrite
+python src/train_sface_classifier.py
+```
+
+Recognize a new image with:
+
+```bash
+python src/predict_sface.py path/to/face.jpg
+```
+
+The current internal evaluation reached 96.15% validation accuracy and 100%
+accuracy on 25 held-out originals. Because the test set is small, these figures
+describe only the current dataset and must not be interpreted as universal
+real-world accuracy.
 
 ## Evaluation policy
 

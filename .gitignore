@@ -9,6 +9,7 @@ __pycache__/
 data/raw/
 data/legacy_augmented/
 data/leakage_free/
+data/face_cropped/
 
 # Generated models, arrays, reports and visual checks
 models/*
