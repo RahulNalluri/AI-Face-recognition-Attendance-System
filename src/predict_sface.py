@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLASSIFIER = ROOT / "models" / "sface" / "classifier.npz"
 LABELS = ROOT / "models" / "sface" / "labels.json"
 CONFIG = ROOT / "models" / "sface" / "classifier_config.json"
+THRESHOLD = ROOT / "models" / "sface" / "unknown_threshold.json"
 
 
 def main() -> None:
@@ -30,13 +31,13 @@ def main() -> None:
     parser.add_argument(
         "--min-similarity",
         type=float,
-        default=0.0,
-        help="Optional unknown-person threshold. Calibrate with unenrolled faces before deployment.",
+        default=None,
+        help="Override the calibrated unknown-person threshold.",
     )
     args = parser.parse_args()
-    if not -1 <= args.min_similarity <= 1:
+    if args.min_similarity is not None and not -1 <= args.min_similarity <= 1:
         raise ValueError("--min-similarity must be between -1 and 1")
-    for required in (args.image, YUNET_MODEL, SFACE_MODEL, CLASSIFIER, LABELS, CONFIG):
+    for required in (args.image, YUNET_MODEL, SFACE_MODEL, CLASSIFIER, LABELS, CONFIG, THRESHOLD):
         if not required.exists():
             raise FileNotFoundError(f"Required file is missing: {required}")
 
@@ -54,6 +55,12 @@ def main() -> None:
     train_labels = stored["train_labels"]
     labels = json.loads(LABELS.read_text(encoding="utf-8"))
     config = json.loads(CONFIG.read_text(encoding="utf-8"))
+    threshold_config = json.loads(THRESHOLD.read_text(encoding="utf-8"))
+    threshold = (
+        args.min_similarity
+        if args.min_similarity is not None
+        else float(threshold_config["threshold"])
+    )
     predicted = int(
         predict(
             feature[None, :],
@@ -65,12 +72,13 @@ def main() -> None:
     )
     class_similarities = feature @ train_features[train_labels == predicted].T
     similarity = float(class_similarities.max())
-    identity = labels[str(predicted)] if similarity >= args.min_similarity else "Unknown"
+    identity = labels[str(predicted)] if similarity >= threshold else "Unknown"
     print(
         json.dumps(
             {
                 "identity": identity,
                 "similarity": similarity,
+                "unknown_threshold": threshold,
                 "face_detection_confidence": detection_confidence,
                 "classifier": config["method"],
             },

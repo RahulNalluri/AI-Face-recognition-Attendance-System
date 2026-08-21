@@ -113,6 +113,7 @@ the existing splits, and build the local classifier:
 python src/download_face_models.py
 python src/build_face_cropped_dataset.py --overwrite
 python src/train_sface_classifier.py
+python src/calibrate_unknown_threshold.py
 ```
 
 Recognize a new image with:
@@ -120,6 +121,12 @@ Recognize a new image with:
 ```bash
 python src/predict_sface.py path/to/face.jpg
 ```
+
+Prediction automatically uses the locally calibrated cosine threshold and
+returns `Unknown` when the closest enrolled face is not similar enough. The
+calibration simulates unknown users by excluding each validation identity from
+the comparison. A final deployment threshold still requires testing with
+genuinely unenrolled, consented participants.
 
 The current internal evaluation reached 96.15% validation accuracy and 100%
 accuracy on 25 held-out originals. Because the test set is small, these figures
