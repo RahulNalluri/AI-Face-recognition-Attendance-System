@@ -39,6 +39,14 @@ embedding, allowing a new identity to be enrolled from a small local image set.
 The local embeddings, labels, downloaded weights, and photographs remain
 excluded from Git.
 
+### Phase 4 and 5 — Unknown rejection, real-time recognition, and liveness
+
+The calibrated cosine threshold rejects insufficiently similar faces as
+`Unknown`. Real-time recognition tracks multiple faces and confirms identity
+across consecutive frames. A confirmed identity must then complete a randomized
+active-liveness sequence containing a blink and a left/right head turn before a
+recognition event is emitted.
+
 ## CNN architecture
 
 ```text
@@ -150,6 +158,16 @@ Confirmed events are stored locally in
 `artifacts/realtime/recognition_events.jsonl`. Camera frames are displayed but
 are not saved. Event logging can be disabled with `--no-event-log`, and systems
 without a display can use `--headless`.
+
+The live window displays the current randomized instruction. A successful event
+has the type `recognition_and_liveness_passed`; recognition alone is never
+written as an attendance-ready event. The default liveness timeout is 12 seconds
+and can be changed with `--liveness-timeout`.
+
+Active blink/head-turn checks provide basic protection against static printed
+or screen-displayed photographs. They are not a complete defence against
+sophisticated replay or deepfake attacks; a passive anti-spoofing model and
+testing with real presentation attacks are still required before deployment.
 
 The current internal evaluation reached 96.15% validation accuracy and 100%
 accuracy on 25 held-out originals. Because the test set is small, these figures

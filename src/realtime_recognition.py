@@ -19,6 +19,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from liveness import (
+    FaceLandmarkAnalyzer,
+    LivenessController,
+    LivenessSignals,
+    LivenessState,
+)
+
 
 ROOT = Path(__file__).resolve().parent.parent
 YUNET_MODEL = ROOT / "models" / "pretrained" / "face_detection_yunet_2023mar.onnx"
@@ -48,6 +55,8 @@ class FaceTrack:
     display_label: str = "Checking"
     display_similarity: float = 0.0
     detection_confidence: float = 0.0
+    liveness_text: str = "Confirming identity..."
+    liveness_passed: bool = False
 
     def __post_init__(self) -> None:
         self.history = deque(maxlen=self.history_size)
@@ -80,6 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-width", type=int, default=960)
     parser.add_argument("--max-frames", type=int, default=0, help="0 runs until stopped.")
     parser.add_argument("--min-similarity", type=float, default=None)
+    parser.add_argument("--liveness-timeout", type=float, default=12.0)
     parser.add_argument("--no-mirror", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--no-event-log", action="store_true")
@@ -104,6 +114,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-frames cannot be negative")
     if args.min_similarity is not None and not -1 <= args.min_similarity <= 1:
         raise ValueError("--min-similarity must be between -1 and 1")
+    if args.liveness_timeout < 5:
+        raise ValueError("--liveness-timeout must be at least 5 seconds")
 
 
 def intersection_over_union(
@@ -238,6 +250,26 @@ def resize_frame(frame: np.ndarray, maximum_width: int) -> np.ndarray:
     return cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
 
+def signal_for_track(
+    track: FaceTrack, signals: list[LivenessSignals]
+) -> LivenessSignals | None:
+    if not signals:
+        return None
+    overlaps = [(intersection_over_union(track.box, signal.box), signal) for signal in signals]
+    overlap, signal = max(overlaps, key=lambda item: item[0])
+    if overlap >= 0.10:
+        return signal
+    track_x, track_y, track_width, track_height = track.box
+    signal_x, signal_y, signal_width, signal_height = signal.box
+    signal_center = (signal_x + signal_width / 2, signal_y + signal_height / 2)
+    if (
+        track_x <= signal_center[0] <= track_x + track_width
+        and track_y <= signal_center[1] <= track_y + track_height
+    ):
+        return signal
+    return None
+
+
 def draw_track(frame: np.ndarray, track: FaceTrack) -> None:
     x, y, width, height = track.box
     color = (
@@ -251,7 +283,17 @@ def draw_track(frame: np.ndarray, track: FaceTrack) -> None:
         if track.display_label == "Checking"
         else f"{track.display_label}  {track.display_similarity:.2f}"
     )
-    cv2.putText(frame, text, (x, max(24, y - 9)), cv2.FONT_HERSHEY_SIMPLEX, 0.60, color, 2)
+    cv2.putText(frame, text, (x, max(24, y - 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.60, color, 2)
+    live_color = (70, 220, 70) if track.liveness_passed else (0, 210, 255)
+    cv2.putText(
+        frame,
+        track.liveness_text,
+        (x, max(48, y - 7)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.52,
+        live_color,
+        2,
+    )
 
 
 def write_event(path: Path | None, event: dict) -> None:
@@ -279,6 +321,8 @@ def main() -> None:
             "Check camera permissions, index, or file path."
         )
     runtime = SFaceRuntime(args.min_similarity)
+    landmark_analyzer = FaceLandmarkAnalyzer()
+    liveness = LivenessController(timeout_seconds=args.liveness_timeout)
     tracker = TrackManager(args.history_size)
     event_log = None if args.no_event_log else args.event_log
     last_event_by_identity: dict[str, float] = {}
@@ -302,28 +346,52 @@ def main() -> None:
             if mirror:
                 frame = cv2.flip(frame, 1)
             frame = resize_frame(frame, args.max_width)
+            now = time.monotonic()
+            signals = landmark_analyzer.analyze(frame, int(now * 1000))
             if (frame_number - 1) % args.process_every == 0:
                 processed_number += 1
                 tracks = tracker.update(runtime.observe(frame), processed_number)
-                now = time.monotonic()
                 for track in tracks:
                     label, similarity = track.confirm(args.confirmation_frames, args.confirmation_ratio)
                     track.display_label = label
                     track.display_similarity = similarity
-                    if label in {"Checking", "Unknown"}:
-                        continue
-                    last_event = last_event_by_identity.get(label, float("-inf"))
-                    if now - last_event < args.cooldown_seconds:
-                        continue
-                    last_event_by_identity[label] = now
-                    write_event(event_log, {
-                        "event": "identity_confirmed",
-                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                        "identity": label,
-                        "similarity": round(similarity, 6),
-                        "threshold": round(runtime.threshold, 6),
-                        "track_id": track.track_id,
-                    })
+            active_track_ids = set(tracker.tracks)
+            for track_id in list(liveness.sessions):
+                if track_id not in active_track_ids:
+                    liveness.reset(track_id)
+            for track in tracker.tracks.values():
+                signal = signal_for_track(track, signals)
+                session = liveness.update(
+                    track.track_id, track.display_label, signal, now
+                )
+                if session is None:
+                    track.liveness_passed = False
+                    track.liveness_text = (
+                        "Unknown - attendance blocked"
+                        if track.display_label == "Unknown"
+                        else "Confirming identity..."
+                    )
+                    continue
+                track.liveness_passed = session.state == LivenessState.PASSED
+                track.liveness_text = session.prompt()
+                if session.state != LivenessState.PASSED or session.event_emitted:
+                    continue
+                label = track.display_label
+                last_event = last_event_by_identity.get(label, float("-inf"))
+                if now - last_event < args.cooldown_seconds:
+                    continue
+                last_event_by_identity[label] = now
+                session.event_emitted = True
+                write_event(event_log, {
+                    "event": "recognition_and_liveness_passed",
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "identity": label,
+                    "similarity": round(track.display_similarity, 6),
+                    "threshold": round(runtime.threshold, 6),
+                    "liveness": "passed",
+                    "challenges": [challenge.value for challenge in session.challenges],
+                    "track_id": track.track_id,
+                })
             for track in tracker.tracks.values():
                 draw_track(frame, track)
             current_time = time.perf_counter()
@@ -342,6 +410,7 @@ def main() -> None:
                 break
     finally:
         capture.release()
+        landmark_analyzer.close()
         if not args.headless:
             cv2.destroyAllWindows()
     print(f"Recognition stopped after {frame_number} frames.", flush=True)

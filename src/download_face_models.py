@@ -10,6 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DESTINATION = ROOT / "models" / "pretrained"
 MODELS = {
+    "face_landmarker.task": (
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+        "face_landmarker/float16/1/face_landmarker.task",
+        3_000_000,
+    ),
     "face_detection_yunet_2023mar.onnx": (
         "https://github.com/opencv/opencv_zoo/raw/main/models/"
         "face_detection_yunet/face_detection_yunet_2023mar.onnx",
