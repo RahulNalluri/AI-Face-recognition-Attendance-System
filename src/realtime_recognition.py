@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
+import threading
 import time
+import urllib.error
+import urllib.request
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -35,6 +39,8 @@ LABELS = ROOT / "models" / "sface" / "labels.json"
 CONFIG = ROOT / "models" / "sface" / "classifier_config.json"
 THRESHOLD = ROOT / "models" / "sface" / "unknown_threshold.json"
 DEFAULT_EVENT_LOG = ROOT / "artifacts" / "realtime" / "recognition_events.jsonl"
+DEFAULT_ATTENDANCE_API = "http://127.0.0.1:5000/api/recognition-events"
+DEFAULT_DEVICE_TOKEN = ROOT / "instance" / "device_token.txt"
 
 
 @dataclass
@@ -57,6 +63,8 @@ class FaceTrack:
     detection_confidence: float = 0.0
     liveness_text: str = "Confirming identity..."
     liveness_passed: bool = False
+    attendance_text: str = ""
+    last_attendance_sync: float = float("-inf")
 
     def __post_init__(self) -> None:
         self.history = deque(maxlen=self.history_size)
@@ -94,6 +102,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--no-event-log", action="store_true")
     parser.add_argument("--event-log", type=Path, default=DEFAULT_EVENT_LOG)
+    parser.add_argument("--attendance-api", default=DEFAULT_ATTENDANCE_API)
+    parser.add_argument("--device-token-file", type=Path, default=DEFAULT_DEVICE_TOKEN)
+    parser.add_argument("--attendance-sync-seconds", type=float, default=30.0)
+    parser.add_argument("--ui-frame-fps", type=float, default=10.0)
+    parser.add_argument("--no-attendance-api", action="store_true")
+    parser.add_argument("--no-ui-frame", action="store_true")
     return parser.parse_args()
 
 
@@ -116,6 +130,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-similarity must be between -1 and 1")
     if args.liveness_timeout < 5:
         raise ValueError("--liveness-timeout must be at least 5 seconds")
+    if args.attendance_sync_seconds < 5:
+        raise ValueError("--attendance-sync-seconds must be at least 5 seconds")
+    if not 0.5 <= args.ui_frame_fps <= 15:
+        raise ValueError("--ui-frame-fps must be between 0.5 and 15")
 
 
 def intersection_over_union(
@@ -294,6 +312,16 @@ def draw_track(frame: np.ndarray, track: FaceTrack) -> None:
         live_color,
         2,
     )
+    if track.attendance_text:
+        cv2.putText(
+            frame,
+            track.attendance_text,
+            (x, min(frame.shape[0] - 10, y + height + 22)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (65, 210, 90) if "marked" in track.attendance_text.lower() else (0, 190, 255),
+            2,
+        )
 
 
 def write_event(path: Path | None, event: dict) -> None:
@@ -303,6 +331,127 @@ def write_event(path: Path | None, event: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as file:
             file.write(encoded + "\n")
+
+
+class AttendanceClient:
+    """Small fail-safe client for forwarding trusted camera events to Flask."""
+
+    def __init__(self, api_url: str, token_file: Path, enabled: bool = True) -> None:
+        self.api_url = api_url
+        self.frame_url = api_url.rsplit("/api/", 1)[0] + "/api/camera-frame"
+        self.enabled = enabled
+        self.token = ""
+        if enabled:
+            if token_file.exists():
+                self.token = token_file.read_text(encoding="utf-8").strip()
+            if not self.token:
+                print(
+                    f"Attendance API disabled: device token not found at {token_file}. "
+                    "Start the web application once or use --device-token-file.",
+                    flush=True,
+                )
+                self.enabled = False
+
+    def send(self, event: dict) -> dict:
+        if not self.enabled:
+            return {"outcome": "api_disabled", "message": "Database sync disabled"}
+        request = urllib.request.Request(
+            self.api_url,
+            data=json.dumps(event).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Device-Token": self.token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=2.5) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            try:
+                payload = json.loads(error.read().decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = {"error": f"HTTP {error.code}"}
+            return {"outcome": "api_error", "message": payload.get("error", str(payload))}
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            return {"outcome": "api_offline", "message": f"Attendance server unavailable: {error}"}
+
+    def send_frame(self, frame: np.ndarray) -> None:
+        if not self.enabled:
+            return
+        if frame.shape[1] > 720:
+            scale = 720 / frame.shape[1]
+            frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        encoded, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if not encoded:
+            return
+        request = urllib.request.Request(
+            self.frame_url,
+            data=jpeg.tobytes(),
+            headers={"Content-Type": "image/jpeg", "X-Device-Token": self.token},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=0.75):
+                pass
+        except (urllib.error.URLError, TimeoutError, OSError):
+            pass
+
+
+class FramePublisher:
+    """Publish only the newest preview frame without blocking recognition."""
+
+    def __init__(self, client: AttendanceClient, enabled: bool) -> None:
+        self.client = client
+        self.enabled = enabled and client.enabled
+        self.frames: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+        self.stopping = False
+        self.worker: threading.Thread | None = None
+        if self.enabled:
+            self.worker = threading.Thread(target=self._run, daemon=True)
+            self.worker.start()
+
+    def submit(self, frame: np.ndarray) -> None:
+        if not self.enabled:
+            return
+        preview = frame.copy()
+        try:
+            self.frames.put_nowait(preview)
+        except queue.Full:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.frames.put_nowait(preview)
+            except queue.Full:
+                pass
+
+    def _run(self) -> None:
+        while not self.stopping:
+            try:
+                frame = self.frames.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            self.client.send_frame(frame)
+
+    def close(self) -> None:
+        self.stopping = True
+        if self.worker is not None:
+            self.worker.join(timeout=1.0)
+
+
+def recognition_event(track: FaceTrack, runtime: SFaceRuntime) -> dict:
+    return {
+        "event": "recognition_and_liveness_passed",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "identity": track.display_label,
+        "similarity": round(track.display_similarity, 6),
+        "threshold": round(runtime.threshold, 6),
+        "liveness": "passed",
+        "challenges": [],
+        "track_id": track.track_id,
+    }
 
 
 def source_value(value: str) -> int | str:
@@ -316,20 +465,35 @@ def main() -> None:
     is_camera = isinstance(source, int)
     capture = cv2.VideoCapture(source)
     if not capture.isOpened():
+        windows_hint = (
+            " Close Windows Camera, Teams, Zoom, or browser camera tabs and check "
+            "Settings > Privacy & security > Camera."
+            if is_camera
+            else ""
+        )
         raise RuntimeError(
             f"Could not open {'camera index' if is_camera else 'source'} {args.source}. "
-            "Check camera permissions, index, or file path."
+            f"Check camera permissions, index, or file path.{windows_hint}"
         )
     runtime = SFaceRuntime(args.min_similarity)
     landmark_analyzer = FaceLandmarkAnalyzer()
     liveness = LivenessController(timeout_seconds=args.liveness_timeout)
     tracker = TrackManager(args.history_size)
     event_log = None if args.no_event_log else args.event_log
+    attendance_client = AttendanceClient(
+        args.attendance_api,
+        args.device_token_file,
+        enabled=not args.no_attendance_api,
+    )
+    frame_publisher = FramePublisher(
+        attendance_client, enabled=not args.no_ui_frame
+    )
     last_event_by_identity: dict[str, float] = {}
     frame_number = 0
     processed_number = 0
     previous_time = time.perf_counter()
     displayed_fps = 0.0
+    last_ui_frame = float("-inf")
     mirror = is_camera and not args.no_mirror
     print(
         f"Recognition started: source={args.source}, threshold={runtime.threshold:.4f}. "
@@ -374,24 +538,27 @@ def main() -> None:
                     continue
                 track.liveness_passed = session.state == LivenessState.PASSED
                 track.liveness_text = session.prompt()
-                if session.state != LivenessState.PASSED or session.event_emitted:
+                if session.state != LivenessState.PASSED:
                     continue
                 label = track.display_label
-                last_event = last_event_by_identity.get(label, float("-inf"))
-                if now - last_event < args.cooldown_seconds:
-                    continue
-                last_event_by_identity[label] = now
-                session.event_emitted = True
-                write_event(event_log, {
-                    "event": "recognition_and_liveness_passed",
-                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                    "identity": label,
-                    "similarity": round(track.display_similarity, 6),
-                    "threshold": round(runtime.threshold, 6),
-                    "liveness": "passed",
-                    "challenges": [challenge.value for challenge in session.challenges],
-                    "track_id": track.track_id,
-                })
+                if not session.event_emitted:
+                    last_event = last_event_by_identity.get(label, float("-inf"))
+                    if now - last_event >= args.cooldown_seconds:
+                        last_event_by_identity[label] = now
+                        session.event_emitted = True
+                        event = recognition_event(track, runtime)
+                        event["challenges"] = [challenge.value for challenge in session.challenges]
+                        write_event(event_log, event)
+                if now - track.last_attendance_sync >= args.attendance_sync_seconds:
+                    event = recognition_event(track, runtime)
+                    event["challenges"] = [challenge.value for challenge in session.challenges]
+                    result = attendance_client.send(event)
+                    track.last_attendance_sync = now
+                    track.attendance_text = result.get("message", result.get("outcome", "Attendance sync"))
+                    print(
+                        json.dumps({"attendance_sync": result, "identity": label}, ensure_ascii=False),
+                        flush=True,
+                    )
             for track in tracker.tracks.values():
                 draw_track(frame, track)
             current_time = time.perf_counter()
@@ -402,6 +569,9 @@ def main() -> None:
                 frame, f"FPS {displayed_fps:.1f} | threshold {runtime.threshold:.2f}",
                 (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2,
             )
+            if not args.no_ui_frame and now - last_ui_frame >= 1.0 / args.ui_frame_fps:
+                frame_publisher.submit(frame)
+                last_ui_frame = now
             if not args.headless:
                 cv2.imshow("AI Face Recognition Attendance", frame)
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
@@ -409,6 +579,7 @@ def main() -> None:
             if args.max_frames and frame_number >= args.max_frames:
                 break
     finally:
+        frame_publisher.close()
         capture.release()
         landmark_analyzer.close()
         if not args.headless:

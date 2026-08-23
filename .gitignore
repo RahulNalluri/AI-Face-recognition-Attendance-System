@@ -20,6 +20,7 @@ artifacts/*
 
 # Temporary local work
 tmp/
+instance/
 
 # Local documentation
 docs/

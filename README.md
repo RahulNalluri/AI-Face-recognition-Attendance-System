@@ -1,11 +1,11 @@
 # AI-Based Face Recognition Attendance System Using Neural Networks
 
 This project develops an automated attendance system that identifies
-registered students from facial images and prepares their identities for
-attendance logging. The system investigates face preprocessing, controlled
-data augmentation, neural-network classification, model evaluation, and the
-future integration of unknown-person rejection, liveness detection, and secure
-attendance records.
+registered students from a live camera and records attendance only after
+identity confirmation and active liveness verification. It combines face
+preprocessing, controlled data augmentation, neural-network recognition,
+unknown-person rejection, scheduled attendance checkpoints, and a live local
+monitoring dashboard.
 
 ## Project objectives
 
@@ -39,13 +39,23 @@ embedding, allowing a new identity to be enrolled from a small local image set.
 The local embeddings, labels, downloaded weights, and photographs remain
 excluded from Git.
 
-### Phase 4 and 5 — Unknown rejection, real-time recognition, and liveness
+### Unknown rejection, real-time recognition, and liveness
 
 The calibrated cosine threshold rejects insufficiently similar faces as
 `Unknown`. Real-time recognition tracks multiple faces and confirms identity
 across consecutive frames. A confirmed identity must then complete a randomized
 active-liveness sequence containing a blink and a left/right head turn before a
 recognition event is emitted.
+
+### Scheduled attendance and live monitoring dashboard
+
+Trusted camera events are sent to a local Flask API and stored in SQLite. A
+class can contain multiple attendance checkpoints—for example, a 130-minute
+class starting at 9:30 with a 65-minute interval creates checks at 9:30 and
+10:35. A student can be marked only once per checkpoint. The login-free local
+dashboard displays the camera preview, recognized model identities, checkpoint
+counts, and recognition results as they arrive. Camera preview frames remain in
+memory and are not written to disk.
 
 ## CNN architecture
 
@@ -136,28 +146,74 @@ calibration simulates unknown users by excluding each validation identity from
 the comparison. A final deployment threshold still requires testing with
 genuinely unenrolled, consented participants.
 
-### 5. Run real-time webcam recognition
+### 5. Start the local dashboard
 
-Start the default webcam with temporal confirmation and automatic unknown-person
-rejection:
+Initialize the private local database and start the dashboard:
+
+```bash
+python src/manage_attendance.py init
+python src/web_app.py
+```
+
+Open `http://127.0.0.1:5000`. Manual registration is not required: after a
+trained identity passes recognition and liveness for the first time, its exact
+SFace label is added to the local database automatically. The database, local
+session secret, and protected camera device token are stored under `instance/`,
+which is excluded from Git.
+
+### 6. Create a scheduled class
+
+Use the **Start attendance session** form on the dashboard and set:
+
+- class start and duration;
+- checkpoint interval (65 minutes by default);
+- checkpoint window (10 minutes by default).
+
+For a class beginning at 9:30, the defaults produce the next checkpoint at
+10:35. Recognition outside an open window is audited but does not mark the
+student present.
+
+### 7. Start recognition from the dashboard
+
+Choose camera source `0` and click **Start Camera**. The dashboard launches the
+recognition and liveness pipeline, shows its preview, and displays any startup
+error. Use source `1` when a second camera is connected. Click **Stop Camera**
+to close the webcam and recognition process cleanly.
+
+Close Windows Camera, Teams, Zoom, and browser camera tabs before starting;
+Windows normally permits only one application to control the webcam. Preview
+frames are published on a background thread as a latest-frame stream at up to
+10 FPS, so a slow browser cannot pause recognition or accumulate delayed frames.
+
+For command-line debugging, the recognizer can still be started directly:
 
 ```bash
 python src/realtime_recognition.py
 ```
 
-Press `Q` or `Esc` to stop. Use another camera with `--source 1`, or test a
-recorded video with `--source path/to/video.mp4`. The default pipeline processes
-every second frame, confirms an identity across three observations, and applies
-a ten-second event cooldown. These controls can be adjusted:
+Use another camera with `--source 1`, or test a recorded video with
+`--source path/to/video.mp4`. The default pipeline processes every second frame,
+confirms an identity across three observations, and applies a ten-second event
+cooldown. These controls can be adjusted:
 
 ```bash
 python src/realtime_recognition.py --process-every 2 --confirmation-frames 3 --cooldown-seconds 10
 ```
 
-Confirmed events are stored locally in
+The dashboard-managed recognizer reads the private device token from
+`instance/device_token.txt` and sends passed events to the attendance API. It
+retries the database sync every 30 seconds while a
+live, confirmed student remains visible, allowing a later hourly checkpoint to
+be marked without restarting the camera. Change this with
+`--attendance-sync-seconds`, or use `--no-attendance-api` for recognition-only
+operation.
+
+Confirmed events are also stored locally in
 `artifacts/realtime/recognition_events.jsonl`. Camera frames are displayed but
-are not saved. Event logging can be disabled with `--no-event-log`, and systems
-without a display can use `--headless`.
+are not saved. A compressed preview is passed to the local dashboard in memory;
+disable it with `--no-ui-frame`. Event logging can be disabled with
+`--no-event-log`, and systems without a desktop display can use `--headless`
+while retaining the browser preview.
 
 The live window displays the current randomized instruction. A successful event
 has the type `recognition_and_liveness_passed`; recognition alone is never
@@ -181,18 +237,17 @@ real-world accuracy.
 - The test split is evaluated only after training.
 - Accuracy, macro F1-score, per-class metrics, and the confusion matrix are
   reported together.
-- The current CNN is a closed-set classifier and does not yet provide calibrated
-  unknown-person recognition.
+- The CNN baseline is evaluated as a closed-set classifier; deployed SFace
+  inference separately applies a calibrated unknown-person threshold.
 
 ## Planned enhancements
 
-- Face alignment and a stronger face detector.
-- FaceNet or ArcFace embeddings for scalable enrollment.
-- Calibrated unknown-person rejection.
-- Liveness and presentation-attack detection.
-- Real-time webcam recognition.
-- Secure database attendance records and duplicate prevention.
-- Authentication, consent, encryption, and biometric-data retention controls.
+- Passive anti-spoofing in addition to the current active liveness challenge.
+- Class rosters and reusable timetables instead of enrolling per session.
+- Manual corrections with a complete faculty audit trail.
+- Attendance percentages, shortage alerts, and downloadable reports.
+- PostgreSQL, HTTPS, and deployment hardening for multi-device operation.
+- Consent, encryption, biometric-data retention, and deletion controls.
 
 ## Privacy
 
