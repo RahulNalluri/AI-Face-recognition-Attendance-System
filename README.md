@@ -175,6 +175,22 @@ For a class beginning at 9:30, the defaults produce the next checkpoint at
 10:35. Recognition outside an open window is audited but does not mark the
 student present.
 
+For a quick live test, click **Use 8-minute test preset** before starting the
+session. It creates checkpoints at minute 0, 3, and 6, with each checkpoint
+open for 2 minutes. The one-minute gaps make it easy to confirm that recognition
+is recorded once during each open window and is only audited between windows.
+
+The same repeated-checkpoint workflow can be verified without a webcam and
+without modifying the private application database:
+
+```bash
+python scripts/diagnostics/verify_repeated_checkpoints.py
+```
+
+The verifier uses a temporary isolated database and checks the full sequence:
+first mark, duplicate rejection, closed-window rejection, second mark, and
+second duplicate rejection.
+
 Open **Session history** to view retained sessions. Each report includes the
 saved roster, checkpoint windows, present/absent/open/upcoming status, per-person
 and overall percentages, and a checkpoint-wise CSV export. A person becomes

@@ -78,18 +78,29 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertIn(b"Live attendance", response.data)
         self.assertIn(b"camera-feed", response.data)
         self.assertIn(b"Start Camera", response.data)
+        self.assertIn(b"Use 8-minute test preset", response.data)
         self.assertNotIn(b"Register student", response.data)
         self.assertNotIn(b"Password", response.data)
 
     def test_attendance_is_marked_once_per_checkpoint(self) -> None:
-        first = self.post_event(self.event())
+        first = self.post_event(self.event(self.start + timedelta(minutes=1)))
         self.assertEqual(first.get_json()["outcome"], "marked")
-        duplicate = self.post_event(self.event())
+        duplicate = self.post_event(self.event(self.start + timedelta(minutes=2)))
         self.assertEqual(duplicate.get_json()["outcome"], "already_marked")
+        gap = self.post_event(self.event(self.start + timedelta(minutes=20)))
+        self.assertEqual(gap.get_json()["outcome"], "no_active_checkpoint")
         second_time = self.start + timedelta(minutes=66)
         second = self.post_event(self.event(second_time))
         self.assertEqual(second.get_json()["outcome"], "marked")
+        second_duplicate = self.post_event(self.event(self.start + timedelta(minutes=67)))
+        self.assertEqual(second_duplicate.get_json()["outcome"], "already_marked")
         self.assertNotEqual(first.get_json()["checkpoint_id"], second.get_json()["checkpoint_id"])
+        data = self.database.monitor_data()
+        self.assertEqual(len(data["attendance"]), 2)
+        self.assertEqual(
+            [row["outcome"] for row in reversed(data["logs"][:5])],
+            ["marked", "already_marked", "no_active_checkpoint", "marked", "already_marked"],
+        )
 
     def test_untrusted_and_unknown_events_are_blocked(self) -> None:
         self.assertEqual(self.client.post("/api/recognition-events", json=self.event()).status_code, 401)
