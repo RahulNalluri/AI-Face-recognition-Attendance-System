@@ -275,6 +275,21 @@ def create_app(
         flash("Attendance session closed.", "success")
         return redirect(url_for("dashboard"))
 
+    @app.post("/sessions/<int:session_id>/attendance/adjust")
+    def adjust_session_attendance(session_id: int):
+        try:
+            status = database.adjust_attendance(
+                session_id=session_id,
+                checkpoint_id=int(request.form["checkpoint_id"]),
+                student_id=int(request.form["student_id"]),
+                new_status=request.form["status"],
+                reason=request.form["reason"],
+            )
+            flash(f"Attendance corrected to {status} and added to the audit trail.", "success")
+        except (KeyError, TypeError, ValueError) as error:
+            flash(str(error), "error")
+        return redirect(url_for("session_detail", session_id=session_id, _anchor="attendance-matrix"))
+
     @app.get("/export.csv")
     def export_csv():
         data = database.monitor_data(log_limit=0)
@@ -297,7 +312,10 @@ def create_app(
         for student in detail["roster"]:
             writer.writerow(
                 [student["identity_label_snapshot"], student["display_name_snapshot"]]
-                + [cell["status"] for cell in student["cells"]]
+                + [
+                    cell["status"] + (" (manual)" if cell["override"] else "")
+                    for cell in student["cells"]
+                ]
                 + [
                     student["attended_count"], detail["completed_checkpoint_count"],
                     "" if student["attendance_percentage"] is None else student["attendance_percentage"],

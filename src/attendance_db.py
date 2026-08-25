@@ -66,9 +66,27 @@ CREATE TABLE IF NOT EXISTS monitor_recognition_log (
  FOREIGN KEY(checkpoint_id) REFERENCES monitor_checkpoints(id),
  FOREIGN KEY(student_id) REFERENCES students(id)
 );
+CREATE TABLE IF NOT EXISTS attendance_overrides (
+ checkpoint_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+ override_status TEXT NOT NULL CHECK (override_status IN ('present','absent')),
+ reason TEXT NOT NULL, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL,
+ PRIMARY KEY(checkpoint_id, student_id),
+ FOREIGN KEY(checkpoint_id) REFERENCES monitor_checkpoints(id) ON DELETE CASCADE,
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS attendance_audit (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ session_id INTEGER NOT NULL, checkpoint_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
+ previous_status TEXT NOT NULL, new_status TEXT NOT NULL,
+ reason TEXT NOT NULL, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL,
+ FOREIGN KEY(session_id) REFERENCES monitor_sessions(id) ON DELETE CASCADE,
+ FOREIGN KEY(checkpoint_id) REFERENCES monitor_checkpoints(id) ON DELETE CASCADE,
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
+);
 CREATE INDEX IF NOT EXISTS idx_monitor_checkpoints_time ON monitor_checkpoints(opens_at, closes_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_log_time ON monitor_recognition_log(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_session_roster_student ON session_roster(student_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_audit_session ON attendance_audit(session_id, changed_at);
 """
 
 
@@ -224,6 +242,72 @@ class AttendanceDatabase:
         with self.session() as connection:
             connection.execute("UPDATE monitor_sessions SET status='closed' WHERE id=?", (session_id,))
 
+    def adjust_attendance(
+        self, session_id: int, checkpoint_id: int, student_id: int,
+        new_status: str, reason: str, changed_by: str = "Local operator",
+    ) -> str:
+        """Apply a reversible override while preserving recognition evidence."""
+        normalized_status = new_status.strip().lower()
+        normalized_reason = reason.strip()
+        normalized_actor = changed_by.strip() or "Local operator"
+        if normalized_status not in {"present", "absent", "automatic"}:
+            raise ValueError("Attendance status must be present, absent, or automatic")
+        if len(normalized_reason) < 3:
+            raise ValueError("A correction reason of at least 3 characters is required")
+        if len(normalized_reason) > 300:
+            raise ValueError("Correction reason must be 300 characters or fewer")
+
+        now = datetime_text(utc_now())
+        with self.session() as connection:
+            target = connection.execute(
+                """SELECT c.id checkpoint_id,c.session_id,c.closes_at,r.student_id,
+                CASE WHEN a.id IS NULL THEN 'absent' ELSE 'present' END automatic_status,
+                o.override_status
+                FROM monitor_checkpoints c
+                JOIN session_roster r ON r.session_id=c.session_id AND r.student_id=?
+                LEFT JOIN monitor_attendance a ON a.checkpoint_id=c.id AND a.student_id=r.student_id
+                LEFT JOIN attendance_overrides o ON o.checkpoint_id=c.id AND o.student_id=r.student_id
+                WHERE c.id=? AND c.session_id=?""",
+                (student_id, checkpoint_id, session_id),
+            ).fetchone()
+            if not target:
+                raise ValueError("The selected student or checkpoint does not belong to this session")
+            if target["closes_at"] > now:
+                raise ValueError("Attendance can be corrected only after the checkpoint window closes")
+
+            previous_status = target["override_status"] or target["automatic_status"]
+            effective_status = (
+                target["automatic_status"] if normalized_status == "automatic" else normalized_status
+            )
+            if normalized_status == "automatic":
+                connection.execute(
+                    "DELETE FROM attendance_overrides WHERE checkpoint_id=? AND student_id=?",
+                    (checkpoint_id, student_id),
+                )
+            else:
+                connection.execute(
+                    """INSERT INTO attendance_overrides(
+                    checkpoint_id,student_id,override_status,reason,changed_by,changed_at
+                    ) VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(checkpoint_id,student_id) DO UPDATE SET
+                    override_status=excluded.override_status,reason=excluded.reason,
+                    changed_by=excluded.changed_by,changed_at=excluded.changed_at""",
+                    (
+                        checkpoint_id, student_id, normalized_status, normalized_reason,
+                        normalized_actor, now,
+                    ),
+                )
+            connection.execute(
+                """INSERT INTO attendance_audit(
+                session_id,checkpoint_id,student_id,previous_status,new_status,
+                reason,changed_by,changed_at) VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    session_id, checkpoint_id, student_id, previous_status, effective_status,
+                    normalized_reason, normalized_actor, now,
+                ),
+            )
+        return effective_status
+
     def record_recognition_event(self, event: dict[str, Any]) -> AttendanceResult:
         event_type = str(event.get("event", ""))
         identity = str(event.get("identity", "")).strip()
@@ -324,9 +408,19 @@ class AttendanceDatabase:
                     WHERE c.session_id=s.id AND c.closes_at<=?) completed_checkpoint_count,
                 (SELECT COUNT(*) FROM monitor_attendance a JOIN monitor_checkpoints c
                     ON c.id=a.checkpoint_id WHERE c.session_id=s.id) attendance_count,
-                (SELECT COUNT(*) FROM monitor_attendance a JOIN monitor_checkpoints c
-                    ON c.id=a.checkpoint_id
-                    WHERE c.session_id=s.id AND c.closes_at<=?) completed_attendance_count
+                (SELECT COUNT(*) FROM monitor_checkpoints c
+                    JOIN session_roster r ON r.session_id=s.id
+                    WHERE c.session_id=s.id AND c.closes_at<=? AND (
+                        EXISTS (SELECT 1 FROM attendance_overrides o
+                            WHERE o.checkpoint_id=c.id AND o.student_id=r.student_id
+                            AND o.override_status='present')
+                        OR (
+                            NOT EXISTS (SELECT 1 FROM attendance_overrides o
+                                WHERE o.checkpoint_id=c.id AND o.student_id=r.student_id)
+                            AND EXISTS (SELECT 1 FROM monitor_attendance a
+                                WHERE a.checkpoint_id=c.id AND a.student_id=r.student_id)
+                        )
+                    )) completed_attendance_count
                 FROM monitor_sessions s ORDER BY s.starts_at DESC,s.id DESC""",
                 (current, current),
             ).fetchall()
@@ -369,7 +463,20 @@ class AttendanceDatabase:
                 WHERE c.session_id=? ORDER BY c.checkpoint_number,a.recognized_at""",
                 (session_id,),
             ).fetchall()]
+            overrides = [dict(row) for row in connection.execute(
+                """SELECT o.* FROM attendance_overrides o
+                JOIN monitor_checkpoints c ON c.id=o.checkpoint_id
+                WHERE c.session_id=?""", (session_id,),
+            ).fetchall()]
+            audit = [dict(row) for row in connection.execute(
+                """SELECT a.*,r.display_name_snapshot,c.checkpoint_number
+                FROM attendance_audit a
+                JOIN session_roster r ON r.session_id=a.session_id AND r.student_id=a.student_id
+                JOIN monitor_checkpoints c ON c.id=a.checkpoint_id
+                WHERE a.session_id=? ORDER BY a.changed_at DESC,a.id DESC""", (session_id,),
+            ).fetchall()]
         record_map = {(row["student_id"], row["checkpoint_id"]): row for row in attendance}
+        override_map = {(row["student_id"], row["checkpoint_id"]): row for row in overrides}
         completed_ids = {
             checkpoint["id"] for checkpoint in checkpoints
             if checkpoint["closes_at"] <= now_text
@@ -380,18 +487,21 @@ class AttendanceDatabase:
             attended_total = 0
             for checkpoint in checkpoints:
                 record = record_map.get((student["student_id"], checkpoint["id"]))
-                if record:
-                    status = "present"
+                override = override_map.get((student["student_id"], checkpoint["id"]))
+                automatic_status = "present" if record else (
+                    "absent" if checkpoint["closes_at"] <= now_text else
+                    "open" if checkpoint["opens_at"] <= now_text <= checkpoint["closes_at"] else "upcoming"
+                )
+                status = override["override_status"] if override else automatic_status
+                if status == "present":
                     attended_total += 1
                     if checkpoint["id"] in completed_ids:
                         attended_completed += 1
-                elif checkpoint["closes_at"] <= now_text:
-                    status = "absent"
-                elif checkpoint["opens_at"] <= now_text <= checkpoint["closes_at"]:
-                    status = "open"
-                else:
-                    status = "upcoming"
-                cells.append({"checkpoint": checkpoint, "record": record, "status": status})
+                cells.append({
+                    "checkpoint": checkpoint, "record": record, "status": status,
+                    "automatic_status": automatic_status, "override": override,
+                    "editable": checkpoint["id"] in completed_ids,
+                })
             student["cells"] = cells
             student["attended_count"] = attended_total
             student["attendance_percentage"] = (
@@ -400,13 +510,20 @@ class AttendanceDatabase:
             )
         completed_possible = len(completed_ids) * len(roster)
         completed_present = sum(
-            1 for row in attendance if row["checkpoint_id"] in completed_ids
+            1 for student in roster for cell in student["cells"]
+            if cell["checkpoint"]["id"] in completed_ids and cell["status"] == "present"
         )
+        for checkpoint in checkpoints:
+            checkpoint["attendance_count"] = sum(
+                1 for student in roster for cell in student["cells"]
+                if cell["checkpoint"]["id"] == checkpoint["id"] and cell["status"] == "present"
+            )
         return {
             "session": dict(session_row),
             "checkpoints": checkpoints,
             "roster": roster,
             "attendance": attendance,
+            "audit": audit,
             "completed_checkpoint_count": len(completed_ids),
             "attendance_percentage": (
                 round(completed_present * 100 / completed_possible, 1)

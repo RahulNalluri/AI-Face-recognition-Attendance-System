@@ -160,6 +160,63 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertEqual([cell["status"] for cell in first["cells"]], ["present", "absent", "absent"])
         self.assertEqual([cell["status"] for cell in second["cells"]], ["absent", "absent", "absent"])
 
+    def test_manual_corrections_preserve_evidence_and_create_audit_trail(self) -> None:
+        past_start = datetime.now(timezone.utc) - timedelta(minutes=12)
+        session_id = self.database.start_session("Correction test", past_start, 8, 3, 2)
+        marked = self.post_event(self.event(past_start + timedelta(minutes=1)))
+        self.assertEqual(marked.get_json()["outcome"], "marked")
+        detail = self.database.session_detail(session_id)
+        student = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_one")
+        checkpoint = detail["checkpoints"][0]
+
+        page = self.client.get(f"/sessions/{session_id}")
+        token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
+        corrected = self.client.post(
+            f"/sessions/{session_id}/attendance/adjust",
+            data={
+                "csrf_token": token, "checkpoint_id": checkpoint["id"],
+                "student_id": student["student_id"], "status": "absent",
+                "reason": "Approved medical leave",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"Attendance corrected to absent", corrected.data)
+        detail = self.database.session_detail(session_id)
+        student = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_one")
+        self.assertEqual(student["cells"][0]["status"], "absent")
+        self.assertEqual(student["cells"][0]["automatic_status"], "present")
+        self.assertIsNotNone(student["cells"][0]["record"])
+        self.assertEqual(detail["audit"][0]["reason"], "Approved medical leave")
+        exported = self.client.get(f"/sessions/{session_id}/export.csv")
+        self.assertIn(b"absent (manual)", exported.data)
+        history_item = next(row for row in self.database.session_history() if row["id"] == session_id)
+        self.assertEqual(history_item["attendance_percentage"], 0.0)
+
+        restored = self.client.post(
+            f"/sessions/{session_id}/attendance/adjust",
+            data={
+                "csrf_token": token, "checkpoint_id": checkpoint["id"],
+                "student_id": student["student_id"], "status": "automatic",
+                "reason": "Restored recognition result",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"Attendance corrected to present", restored.data)
+        detail = self.database.session_detail(session_id)
+        student = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_one")
+        self.assertEqual(student["cells"][0]["status"], "present")
+        self.assertIsNone(student["cells"][0]["override"])
+        self.assertEqual(len(detail["audit"]), 2)
+
+    def test_open_checkpoint_cannot_be_manually_corrected(self) -> None:
+        detail = self.database.session_detail(self.session_id)
+        student = detail["roster"][0]
+        with self.assertRaisesRegex(ValueError, "only after the checkpoint window closes"):
+            self.database.adjust_attendance(
+                self.session_id, detail["checkpoints"][0]["id"], student["student_id"],
+                "present", "Manual early correction",
+            )
+
     def test_camera_frame_requires_device_token_and_is_available_to_ui(self) -> None:
         jpeg = b"\xff\xd8test-frame\xff\xd9"
         self.assertEqual(self.client.post("/api/camera-frame", data=jpeg, content_type="image/jpeg").status_code, 401)

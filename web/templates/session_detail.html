@@ -15,15 +15,25 @@
   <div class="panel-heading"><div><h2>Checkpoint summary</h2><p>Attendance windows and captured records.</p></div><span class="badge {{ detail.session.status }}">{{ detail.session.status }}</span></div>
   <div class="checkpoint-cards">{% for item in detail.checkpoints %}<article><span>Checkpoint {{ item.checkpoint_number }}</span><strong>{{ item.opens_at|local_datetime }}</strong><small>Closes {{ item.closes_at|local_datetime }}</small><b>{{ item.attendance_count }}/{{ detail.roster|length }} present</b></article>{% endfor %}</div>
 </section>
-<section class="panel">
-  <div class="panel-heading"><div><h2>Attendance matrix</h2><p>Absent is assigned only after a checkpoint window closes.</p></div></div>
+<section id="attendance-matrix" class="panel">
+  <div class="panel-heading"><div><h2>Attendance management</h2><p>Search the roster or correct a completed checkpoint. Recognition evidence is always preserved.</p></div><label class="table-search">Search roster<input id="roster-search" type="search" placeholder="Name, label, or registration"></label></div>
   <div class="table-wrap"><table class="matrix-table">
     <thead><tr><th>Identity</th>{% for item in detail.checkpoints %}<th>Check {{ item.checkpoint_number }}<small>{{ item.opens_at|local_datetime }}</small></th>{% endfor %}<th>Attendance</th></tr></thead>
-    <tbody>{% for student in detail.roster %}<tr>
-      <td><strong>{{ student.display_name_snapshot }}</strong><small>{{ student.identity_label_snapshot }}</small></td>
-      {% for cell in student.cells %}<td><span class="matrix-status {{ cell.status }}">{{ cell.status }}</span>{% if cell.record %}<small>{{ cell.record.recognized_at|local_datetime }}<br>Similarity {{ '%.3f'|format(cell.record.similarity) }}</small>{% endif %}</td>{% endfor %}
+    <tbody id="roster-body">{% for student in detail.roster %}<tr data-search="{{ student.display_name_snapshot|lower }} {{ student.identity_label_snapshot|lower }} {{ student.registration_number|lower }}">
+      <td><strong>{{ student.display_name_snapshot }}</strong><small>{{ student.identity_label_snapshot }}{% if student.registration_number and not student.registration_number.startswith('AUTO-') %} · {{ student.registration_number }}{% endif %}</small></td>
+      {% for cell in student.cells %}<td><span class="matrix-status {{ cell.status }}">{{ cell.status }}</span>{% if cell.override %}<small class="manual-note">Manual correction<br>{{ cell.override.reason }}</small>{% elif cell.record %}<small>{{ cell.record.recognized_at|local_datetime }}<br>Similarity {{ '%.3f'|format(cell.record.similarity) }}</small>{% endif %}{% if cell.editable %}<details class="correction-control"><summary>Correct</summary><form method="post" action="{{ url_for('adjust_session_attendance', session_id=detail.session.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="checkpoint_id" value="{{ cell.checkpoint.id }}"><input type="hidden" name="student_id" value="{{ student.student_id }}"><label>Status<select name="status"><option value="present" {% if cell.status == 'present' %}selected{% endif %}>Present</option><option value="absent" {% if cell.status == 'absent' %}selected{% endif %}>Absent</option><option value="automatic">Restore automatic</option></select></label><label>Reason<input name="reason" minlength="3" maxlength="300" placeholder="Required audit reason" required></label><button class="button primary" type="submit">Save correction</button></form></details>{% endif %}</td>{% endfor %}
       <td><strong>{{ student.attended_count }}/{{ detail.checkpoints|length }}</strong><small>{{ 'Not calculated' if student.attendance_percentage is none else '%.1f%% completed'|format(student.attendance_percentage) }}</small></td>
     </tr>{% else %}<tr><td colspan="{{ detail.checkpoints|length + 2 }}" class="empty">This session has no roster snapshot.</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>
+<section class="panel">
+  <div class="panel-heading"><div><h2>Correction audit trail</h2><p>Every manual change and restoration is retained.</p></div><span class="badge">{{ detail.audit|length }} changes</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Changed at</th><th>Student</th><th>Checkpoint</th><th>Change</th><th>Reason</th><th>Changed by</th></tr></thead><tbody>
+  {% for item in detail.audit %}<tr><td>{{ item.changed_at|local_datetime }}</td><td><strong>{{ item.display_name_snapshot }}</strong></td><td>Check {{ item.checkpoint_number }}</td><td><span class="matrix-status {{ item.new_status }}">{{ item.previous_status }} → {{ item.new_status }}</span></td><td>{{ item.reason }}</td><td>{{ item.changed_by }}</td></tr>{% else %}<tr><td colspan="6" class="empty">No manual corrections have been made.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
 {% endblock %}
+{% block scripts %}<script>
+const rosterSearch=document.getElementById('roster-search');
+rosterSearch.addEventListener('input',()=>{const query=rosterSearch.value.trim().toLowerCase();for(const row of document.querySelectorAll('#roster-body tr[data-search]'))row.hidden=!row.dataset.search.includes(query);});
+</script>{% endblock %}

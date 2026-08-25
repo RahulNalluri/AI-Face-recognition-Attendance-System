@@ -196,7 +196,22 @@ saved roster, checkpoint windows, present/absent/open/upcoming status, per-perso
 and overall percentages, and a checkpoint-wise CSV export. A person becomes
 absent only after that checkpoint window closes.
 
-### 7. Start recognition from the dashboard
+### 7. Manage completed attendance
+
+Open a session report and use **Search roster** to find a person by name, model
+label, or registration number. A completed checkpoint can be corrected to
+present or absent by opening **Correct**, selecting the effective status, and
+entering a reason. Choose **Restore automatic** to return to the original
+recognition result.
+
+Corrections never overwrite face-recognition evidence. The original timestamp,
+similarity, and liveness-backed attendance row remain stored, while the effective
+status is maintained separately. Every correction and restoration records the
+previous status, new status, reason, time, and operator in the session's audit
+trail. Reports, percentages, checkpoint totals, and CSV exports use the effective
+status; manually corrected CSV cells are labelled `(manual)`.
+
+### 8. Start recognition from the dashboard
 
 Choose camera source `0` and click **Start Camera**. The dashboard launches the
 recognition and liveness pipeline, shows its preview, and displays any startup
@@ -267,7 +282,6 @@ real-world accuracy.
 
 - Passive anti-spoofing in addition to the current active liveness challenge.
 - Reusable timetables and named class groups for automatic session creation.
-- Manual corrections with a complete faculty audit trail.
 - Attendance percentages, shortage alerts, and downloadable reports.
 - PostgreSQL, HTTPS, and deployment hardening for multi-device operation.
 - Consent, encryption, biometric-data retention, and deletion controls.
