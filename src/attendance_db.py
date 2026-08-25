@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS monitor_checkpoints (
  UNIQUE(session_id, checkpoint_number),
  FOREIGN KEY(session_id) REFERENCES monitor_sessions(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS session_roster (
+ session_id INTEGER NOT NULL,
+ student_id INTEGER NOT NULL,
+ identity_label_snapshot TEXT NOT NULL,
+ display_name_snapshot TEXT NOT NULL,
+ added_at TEXT NOT NULL,
+ PRIMARY KEY(session_id, student_id),
+ FOREIGN KEY(session_id) REFERENCES monitor_sessions(id) ON DELETE CASCADE,
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS monitor_attendance (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  checkpoint_id INTEGER NOT NULL, student_id INTEGER NOT NULL,
@@ -58,6 +68,7 @@ CREATE TABLE IF NOT EXISTS monitor_recognition_log (
 );
 CREATE INDEX IF NOT EXISTS idx_monitor_checkpoints_time ON monitor_checkpoints(opens_at, closes_at);
 CREATE INDEX IF NOT EXISTS idx_monitor_log_time ON monitor_recognition_log(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_session_roster_student ON session_roster(student_id);
 """
 
 
@@ -117,6 +128,47 @@ class AttendanceDatabase:
         with self.session() as connection:
             return connection.execute("SELECT * FROM students WHERE active=1 ORDER BY display_name").fetchall()
 
+    def sync_identities(self, labels: list[str]) -> dict[str, int]:
+        normalized = []
+        seen = set()
+        for raw_label in labels:
+            label = str(raw_label).strip()
+            key = label.casefold()
+            if not label or label.lower() == "unknown" or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(label)
+        inserted = 0
+        with self.session() as connection:
+            for label in normalized:
+                display_name = label.replace("_", " ").replace("-", " ").strip().title()
+                cursor = connection.execute(
+                    """INSERT OR IGNORE INTO students(
+                    identity_label,display_name,registration_number,created_at
+                    ) VALUES (?,?,?,?)""",
+                    (label, display_name or label, f"AUTO-{label}", datetime_text(utc_now())),
+                )
+                inserted += max(cursor.rowcount, 0)
+        return {"labels": len(normalized), "inserted": inserted}
+
+    def backfill_missing_rosters(self) -> int:
+        now = datetime_text(utc_now())
+        with self.session() as connection:
+            sessions = connection.execute(
+                """SELECT s.id FROM monitor_sessions s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM session_roster r WHERE r.session_id=s.id
+                )"""
+            ).fetchall()
+            for row in sessions:
+                connection.execute(
+                    """INSERT OR IGNORE INTO session_roster(
+                    session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
+                    ) SELECT ?,id,identity_label,display_name,? FROM students WHERE active=1""",
+                    (row["id"], now),
+                )
+            return len(sessions)
+
     def start_session(
         self, title: str, starts_at: datetime, duration_minutes: int = 130,
         checkpoint_interval_minutes: int = 65, checkpoint_window_minutes: int = 10,
@@ -149,6 +201,12 @@ class AttendanceDatabase:
                 )
                 checkpoint_time += timedelta(minutes=checkpoint_interval_minutes)
                 number += 1
+            connection.execute(
+                """INSERT INTO session_roster(
+                session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
+                ) SELECT ?,id,identity_label,display_name,? FROM students WHERE active=1""",
+                (session_id, datetime_text(now)),
+            )
             return session_id
 
     def refresh_statuses(self, now: datetime | None = None) -> None:
@@ -210,7 +268,7 @@ class AttendanceDatabase:
                 ).fetchone()
             student_id = int(student["id"])
             checkpoint = connection.execute(
-                """SELECT c.id FROM monitor_checkpoints c JOIN monitor_sessions s ON s.id=c.session_id
+                """SELECT c.id,c.session_id FROM monitor_checkpoints c JOIN monitor_sessions s ON s.id=c.session_id
                 WHERE s.status='active' AND c.opens_at<=? AND c.closes_at>=?
                 ORDER BY c.opens_at DESC LIMIT 1""", (occurred_text, occurred_text),
             ).fetchone()
@@ -222,6 +280,15 @@ class AttendanceDatabase:
                 log(connection, result)
                 return result
             checkpoint_id = int(checkpoint["id"])
+            connection.execute(
+                """INSERT OR IGNORE INTO session_roster(
+                session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
+                ) VALUES (?,?,?,?,?)""",
+                (
+                    int(checkpoint["session_id"]), student_id, student["identity_label"],
+                    student["display_name"], occurred_text,
+                ),
+            )
             try:
                 cursor = connection.execute(
                     "INSERT INTO monitor_attendance(checkpoint_id,student_id,recognized_at,similarity,liveness_passed) VALUES (?,?,?,?,1)",
@@ -244,6 +311,108 @@ class AttendanceDatabase:
                 )
                 log(connection, result)
                 return result
+
+    def session_history(self) -> list[dict[str, Any]]:
+        self.refresh_statuses()
+        current = datetime_text(utc_now())
+        with self.session() as connection:
+            rows = connection.execute(
+                """SELECT s.*,
+                (SELECT COUNT(*) FROM session_roster r WHERE r.session_id=s.id) roster_count,
+                (SELECT COUNT(*) FROM monitor_checkpoints c WHERE c.session_id=s.id) checkpoint_count,
+                (SELECT COUNT(*) FROM monitor_checkpoints c
+                    WHERE c.session_id=s.id AND c.closes_at<=?) completed_checkpoint_count,
+                (SELECT COUNT(*) FROM monitor_attendance a JOIN monitor_checkpoints c
+                    ON c.id=a.checkpoint_id WHERE c.session_id=s.id) attendance_count,
+                (SELECT COUNT(*) FROM monitor_attendance a JOIN monitor_checkpoints c
+                    ON c.id=a.checkpoint_id
+                    WHERE c.session_id=s.id AND c.closes_at<=?) completed_attendance_count
+                FROM monitor_sessions s ORDER BY s.starts_at DESC,s.id DESC""",
+                (current, current),
+            ).fetchall()
+        history = []
+        for row in rows:
+            item = dict(row)
+            possible = item["roster_count"] * item["completed_checkpoint_count"]
+            item["attendance_percentage"] = (
+                round(item["completed_attendance_count"] * 100 / possible, 1)
+                if possible else None
+            )
+            history.append(item)
+        return history
+
+    def session_detail(self, session_id: int) -> dict[str, Any] | None:
+        self.refresh_statuses()
+        now = utc_now()
+        now_text = datetime_text(now)
+        with self.session() as connection:
+            session_row = connection.execute(
+                "SELECT * FROM monitor_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if not session_row:
+                return None
+            checkpoints = [dict(row) for row in connection.execute(
+                """SELECT c.*,COUNT(a.id) attendance_count FROM monitor_checkpoints c
+                LEFT JOIN monitor_attendance a ON a.checkpoint_id=c.id
+                WHERE c.session_id=? GROUP BY c.id ORDER BY c.checkpoint_number""",
+                (session_id,),
+            ).fetchall()]
+            roster = [dict(row) for row in connection.execute(
+                """SELECT r.*,s.registration_number FROM session_roster r
+                JOIN students s ON s.id=r.student_id
+                WHERE r.session_id=? ORDER BY r.display_name_snapshot""",
+                (session_id,),
+            ).fetchall()]
+            attendance = [dict(row) for row in connection.execute(
+                """SELECT a.*,c.checkpoint_number FROM monitor_attendance a
+                JOIN monitor_checkpoints c ON c.id=a.checkpoint_id
+                WHERE c.session_id=? ORDER BY c.checkpoint_number,a.recognized_at""",
+                (session_id,),
+            ).fetchall()]
+        record_map = {(row["student_id"], row["checkpoint_id"]): row for row in attendance}
+        completed_ids = {
+            checkpoint["id"] for checkpoint in checkpoints
+            if checkpoint["closes_at"] <= now_text
+        }
+        for student in roster:
+            cells = []
+            attended_completed = 0
+            attended_total = 0
+            for checkpoint in checkpoints:
+                record = record_map.get((student["student_id"], checkpoint["id"]))
+                if record:
+                    status = "present"
+                    attended_total += 1
+                    if checkpoint["id"] in completed_ids:
+                        attended_completed += 1
+                elif checkpoint["closes_at"] <= now_text:
+                    status = "absent"
+                elif checkpoint["opens_at"] <= now_text <= checkpoint["closes_at"]:
+                    status = "open"
+                else:
+                    status = "upcoming"
+                cells.append({"checkpoint": checkpoint, "record": record, "status": status})
+            student["cells"] = cells
+            student["attended_count"] = attended_total
+            student["attendance_percentage"] = (
+                round(attended_completed * 100 / len(completed_ids), 1)
+                if completed_ids else None
+            )
+        completed_possible = len(completed_ids) * len(roster)
+        completed_present = sum(
+            1 for row in attendance if row["checkpoint_id"] in completed_ids
+        )
+        return {
+            "session": dict(session_row),
+            "checkpoints": checkpoints,
+            "roster": roster,
+            "attendance": attendance,
+            "completed_checkpoint_count": len(completed_ids),
+            "attendance_percentage": (
+                round(completed_present * 100 / completed_possible, 1)
+                if completed_possible else None
+            ),
+        }
 
     def monitor_data(self, log_limit: int = 30) -> dict[str, Any]:
         self.refresh_statuses()
@@ -275,4 +444,5 @@ class AttendanceDatabase:
                 "checkpoints": [dict(row) for row in checkpoints],
                 "attendance": [dict(row) for row in attendance],
                 "logs": [dict(row) for row in logs],
-                "students": [dict(row) for row in students]}
+                "students": [dict(row) for row in students],
+                "history": self.session_history()[:5]}

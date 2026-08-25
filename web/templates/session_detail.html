@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.session.title }} · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Session #{{ detail.session.id }}</p><h1>{{ detail.session.title }}</h1><p>{{ detail.session.starts_at|local_datetime }} – {{ detail.session.ends_at|local_datetime }}</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ url_for('session_history') }}">Back to history</a><a class="button primary" href="{{ url_for('export_session_csv', session_id=detail.session.id) }}">Export CSV</a></div>
+</div>
+<section class="report-stats">
+  <article><strong>{{ detail.roster|length }}</strong><span>Roster identities</span></article>
+  <article><strong>{{ detail.checkpoints|length }}</strong><span>Total checkpoints</span></article>
+  <article><strong>{{ detail.completed_checkpoint_count }}</strong><span>Completed checkpoints</span></article>
+  <article><strong>{{ '—' if detail.attendance_percentage is none else '%.1f%%'|format(detail.attendance_percentage) }}</strong><span>Overall attendance</span></article>
+</section>
+<section class="panel">
+  <div class="panel-heading"><div><h2>Checkpoint summary</h2><p>Attendance windows and captured records.</p></div><span class="badge {{ detail.session.status }}">{{ detail.session.status }}</span></div>
+  <div class="checkpoint-cards">{% for item in detail.checkpoints %}<article><span>Checkpoint {{ item.checkpoint_number }}</span><strong>{{ item.opens_at|local_datetime }}</strong><small>Closes {{ item.closes_at|local_datetime }}</small><b>{{ item.attendance_count }}/{{ detail.roster|length }} present</b></article>{% endfor %}</div>
+</section>
+<section class="panel">
+  <div class="panel-heading"><div><h2>Attendance matrix</h2><p>Absent is assigned only after a checkpoint window closes.</p></div></div>
+  <div class="table-wrap"><table class="matrix-table">
+    <thead><tr><th>Identity</th>{% for item in detail.checkpoints %}<th>Check {{ item.checkpoint_number }}<small>{{ item.opens_at|local_datetime }}</small></th>{% endfor %}<th>Attendance</th></tr></thead>
+    <tbody>{% for student in detail.roster %}<tr>
+      <td><strong>{{ student.display_name_snapshot }}</strong><small>{{ student.identity_label_snapshot }}</small></td>
+      {% for cell in student.cells %}<td><span class="matrix-status {{ cell.status }}">{{ cell.status }}</span>{% if cell.record %}<small>{{ cell.record.recognized_at|local_datetime }}<br>Similarity {{ '%.3f'|format(cell.record.similarity) }}</small>{% endif %}</td>{% endfor %}
+      <td><strong>{{ student.attended_count }}/{{ detail.checkpoints|length }}</strong><small>{{ 'Not calculated' if student.attendance_percentage is none else '%.1f%% completed'|format(student.attendance_percentage) }}</small></td>
+    </tr>{% else %}<tr><td colspan="{{ detail.checkpoints|length + 2 }}" class="empty">This session has no roster snapshot.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

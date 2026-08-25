@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 import sys
 import tempfile
 import unittest
@@ -40,12 +41,18 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.database_path = Path(self.temporary.name) / "attendance.db"
         self.database = AttendanceDatabase(self.database_path)
         self.database.initialize()
-        self.start = datetime.now(timezone.utc) - timedelta(minutes=1)
-        self.session_id = self.database.start_session("Artificial Intelligence", self.start, 130, 65, 10)
+        self.labels_path = Path(self.temporary.name) / "labels.json"
+        self.labels_path.write_text(
+            json.dumps({"0": "student_one", "1": "student_two"}), encoding="utf-8"
+        )
         self.camera = FakeCameraManager()
-        self.app = create_app(self.database_path, camera_manager=self.camera)
+        self.app = create_app(
+            self.database_path, camera_manager=self.camera, labels_path=self.labels_path
+        )
         self.app.config.update(TESTING=True, DEVICE_TOKEN="camera-test-token")
         self.client = self.app.test_client()
+        self.start = datetime.now(timezone.utc) - timedelta(minutes=1)
+        self.session_id = self.database.start_session("Artificial Intelligence", self.start, 130, 65, 10)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -99,7 +106,48 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertEqual(data["logs"][0]["display_name"], "Student One")
         self.assertEqual(data["logs"][0]["registration_number"], "AUTO-student_one")
         self.assertEqual(len(data["attendance"]), 1)
-        self.assertEqual(len(data["students"]), 1)
+        self.assertEqual(len(data["students"]), 2)
+
+    def test_model_labels_are_synchronized_and_snapshotted(self) -> None:
+        self.assertEqual(
+            [row["identity_label"] for row in self.database.students()],
+            ["student_one", "student_two"],
+        )
+        detail = self.database.session_detail(self.session_id)
+        self.assertEqual(len(detail["roster"]), 2)
+        self.assertEqual(
+            {row["identity_label_snapshot"] for row in detail["roster"]},
+            {"student_one", "student_two"},
+        )
+
+    def test_session_history_matrix_and_checkpoint_csv(self) -> None:
+        self.post_event(self.event())
+        history = self.client.get("/sessions")
+        self.assertEqual(history.status_code, 200)
+        self.assertIn(b"Artificial Intelligence", history.data)
+        detail = self.client.get(f"/sessions/{self.session_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn(b"Student One", detail.data)
+        self.assertIn(b"Student Two", detail.data)
+        self.assertIn(b"present", detail.data)
+        exported = self.client.get(f"/sessions/{self.session_id}/export.csv")
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn(b"Checkpoint 1", exported.data)
+        self.assertIn(b"student_one", exported.data)
+        self.assertIn(b"student_two", exported.data)
+
+    def test_closed_checkpoints_calculate_absence_and_percentage(self) -> None:
+        past_start = datetime.now(timezone.utc) - timedelta(minutes=12)
+        session_id = self.database.start_session("Completed class", past_start, 8, 3, 2)
+        marked = self.post_event(self.event(past_start + timedelta(minutes=1)))
+        self.assertEqual(marked.get_json()["outcome"], "marked")
+        detail = self.database.session_detail(session_id)
+        self.assertEqual(detail["completed_checkpoint_count"], 3)
+        self.assertEqual(detail["attendance_percentage"], 16.7)
+        first = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_one")
+        second = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_two")
+        self.assertEqual([cell["status"] for cell in first["cells"]], ["present", "absent", "absent"])
+        self.assertEqual([cell["status"] for cell in second["cells"]], ["absent", "absent", "absent"])
 
     def test_camera_frame_requires_device_token_and_is_available_to_ui(self) -> None:
         jpeg = b"\xff\xd8test-frame\xff\xd9"

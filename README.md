@@ -157,7 +157,9 @@ python src/web_app.py
 
 Open `http://127.0.0.1:5000`. Manual registration is not required: after a
 trained identity passes recognition and liveness for the first time, its exact
-SFace label is added to the local database automatically. The database, local
+SFace label is added to the local database automatically. The application also
+synchronizes every label from `models/sface/labels.json` at startup, and every
+new attendance session stores its own roster snapshot. The database, local
 session secret, and protected camera device token are stored under `instance/`,
 which is excluded from Git.
 
@@ -172,6 +174,11 @@ Use the **Start attendance session** form on the dashboard and set:
 For a class beginning at 9:30, the defaults produce the next checkpoint at
 10:35. Recognition outside an open window is audited but does not mark the
 student present.
+
+Open **Session history** to view retained sessions. Each report includes the
+saved roster, checkpoint windows, present/absent/open/upcoming status, per-person
+and overall percentages, and a checkpoint-wise CSV export. A person becomes
+absent only after that checkpoint window closes.
 
 ### 7. Start recognition from the dashboard
 
@@ -243,7 +250,7 @@ real-world accuracy.
 ## Planned enhancements
 
 - Passive anti-spoofing in addition to the current active liveness challenge.
-- Class rosters and reusable timetables instead of enrolling per session.
+- Reusable timetables and named class groups for automatic session creation.
 - Manual corrections with a complete faculty audit trail.
 - Attendance percentages, shortage alerts, and downloadable reports.
 - PostgreSQL, HTTPS, and deployment hardening for multi-device operation.

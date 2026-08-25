@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-heading">
   <div><p class="eyebrow">Recognition console</p><h1>Live attendance</h1><p>Faces are recorded only after identity confirmation and liveness verification.</p></div>
-  <a class="button ghost" href="{{ url_for('export_csv') }}">Export attendance</a>
+  <div class="page-actions"><a class="button ghost" href="{{ url_for('session_history') }}">Session history</a>{% if data.session %}<a class="button ghost" href="{{ url_for('export_session_csv', session_id=data.session.id) }}">Export attendance</a>{% endif %}</div>
 </div>
 
 <section class="monitor-grid">
@@ -46,6 +46,14 @@
     <button class="button primary" type="submit">Start session</button>
   </form>
 </div>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Recent sessions</h2><p>Roster snapshots and checkpoint reports are retained locally.</p></div><a class="text-link" href="{{ url_for('session_history') }}">View all →</a></div>
+  <div class="table-wrap"><table><thead><tr><th>Session</th><th>Start</th><th>Roster</th><th>Checkpoints</th><th>Attendance</th><th></th></tr></thead><tbody>
+  {% for item in data.history %}<tr><td><strong>{{ item.title }}</strong><small><span class="badge {{ item.status }}">{{ item.status }}</span></small></td><td>{{ item.starts_at|local_datetime }}</td><td>{{ item.roster_count }} identities</td><td>{{ item.completed_checkpoint_count }}/{{ item.checkpoint_count }} completed</td><td>{{ '—' if item.attendance_percentage is none else '%.1f%%'|format(item.attendance_percentage) }}</td><td><a class="text-link" href="{{ url_for('session_detail', session_id=item.id) }}">Report →</a></td></tr>
+  {% else %}<tr><td colspan="6" class="empty">No sessions yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
 {% endblock %}
 {% block scripts %}
 <script>

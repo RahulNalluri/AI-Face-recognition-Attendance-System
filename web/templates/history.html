@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Session History · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Database reports</p><h1>Session history</h1><p>Every session retains its roster, checkpoints, and attendance records.</p></div>
+  <a class="button ghost" href="{{ url_for('dashboard') }}">Live dashboard</a>
+</div>
+<section class="panel">
+  <div class="table-wrap"><table>
+    <thead><tr><th>Session</th><th>Scheduled time</th><th>Status</th><th>Roster</th><th>Checkpoints</th><th>Records</th><th>Attendance</th><th></th></tr></thead>
+    <tbody>{% for item in history %}<tr>
+      <td><strong>{{ item.title }}</strong><small>Session #{{ item.id }}</small></td>
+      <td>{{ item.starts_at|local_datetime }}<small>to {{ item.ends_at|local_datetime }}</small></td>
+      <td><span class="badge {{ item.status }}">{{ item.status }}</span></td>
+      <td>{{ item.roster_count }}</td>
+      <td>{{ item.completed_checkpoint_count }}/{{ item.checkpoint_count }} completed</td>
+      <td>{{ item.attendance_count }}</td>
+      <td>{{ '—' if item.attendance_percentage is none else '%.1f%%'|format(item.attendance_percentage) }}</td>
+      <td><a class="text-link" href="{{ url_for('session_detail', session_id=item.id) }}">Open report →</a></td>
+    </tr>{% else %}<tr><td colspan="8" class="empty">No attendance sessions have been created.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

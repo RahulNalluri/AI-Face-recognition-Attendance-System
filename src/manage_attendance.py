@@ -1,7 +1,13 @@
 """Command-line setup for the local attendance monitor."""
 
 import argparse
+import json
+from pathlib import Path
 from attendance_db import AttendanceDatabase
+
+
+ROOT = Path(__file__).resolve().parent.parent
+LABELS_PATH = ROOT / "models" / "sface" / "labels.json"
 
 
 def main() -> None:
@@ -12,6 +18,11 @@ def main() -> None:
     args = parser.parse_args()
     database = AttendanceDatabase()
     database.initialize()
+    if LABELS_PATH.exists():
+        payload = json.loads(LABELS_PATH.read_text(encoding="utf-8"))
+        labels = list(payload.values()) if isinstance(payload, dict) else list(payload)
+        database.sync_identities([str(label) for label in labels])
+        database.backfill_missing_rosters()
     if args.command == "init":
         print(f"Database ready: {database.path}")
     elif args.command == "list-identities":

@@ -6,6 +6,7 @@ import csv
 import atexit
 import hmac
 import io
+import json
 import os
 import secrets
 import sqlite3
@@ -25,6 +26,7 @@ from attendance_db import AttendanceDatabase, DEFAULT_DATABASE
 ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = ROOT / "web"
 INSTANCE_ROOT = ROOT / "instance"
+DEFAULT_LABELS_PATH = ROOT / "models" / "sface" / "labels.json"
 
 
 class LatestFrame:
@@ -160,9 +162,18 @@ def configured_timezone(name: str):
         return timezone.utc
 
 
+def model_labels(path: Path | str | None) -> list[str]:
+    if path is None or not Path(path).exists():
+        return []
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    values = list(payload.values()) if isinstance(payload, dict) else list(payload)
+    return [str(value) for value in values]
+
+
 def create_app(
     database_path: Path | str | None = None,
     camera_manager: CameraProcessManager | None = None,
+    labels_path: Path | str | None = DEFAULT_LABELS_PATH,
 ) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_ROOT / "templates"), static_folder=str(WEB_ROOT / "static"))
     app.config.update(
@@ -176,6 +187,9 @@ def create_app(
     )
     database = AttendanceDatabase(app.config["DATABASE_PATH"])
     database.initialize()
+    database.sync_identities(model_labels(labels_path))
+    database.backfill_missing_rosters()
+    app.extensions["attendance_database"] = database
     frames = LatestFrame()
     camera = camera_manager or CameraProcessManager()
     app.extensions["camera_manager"] = camera
@@ -211,6 +225,17 @@ def create_app(
         return render_template(
             "dashboard.html", data=database.monitor_data(), camera=camera.status()
         )
+
+    @app.get("/sessions")
+    def session_history():
+        return render_template("history.html", history=database.session_history())
+
+    @app.get("/sessions/<int:session_id>")
+    def session_detail(session_id: int):
+        detail = database.session_detail(session_id)
+        if detail is None:
+            abort(404)
+        return render_template("session_detail.html", detail=detail)
 
     @app.post("/camera/start")
     def start_camera():
@@ -253,18 +278,39 @@ def create_app(
     @app.get("/export.csv")
     def export_csv():
         data = database.monitor_data(log_limit=0)
+        if not data["session"]:
+            return Response("No attendance session exists.\n", status=404, mimetype="text/plain")
+        return redirect(url_for("export_session_csv", session_id=data["session"]["id"]))
+
+    @app.get("/sessions/<int:session_id>/export.csv")
+    def export_session_csv(session_id: int):
+        detail = database.session_detail(session_id)
+        if detail is None:
+            abort(404)
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Registration number", "Student", "Identity label", "Checkpoint", "Recognized at", "Similarity"])
-        for row in data["attendance"]:
-            registration = row["registration_number"]
-            if registration and registration.startswith("AUTO-"):
-                registration = ""
-            writer.writerow([
-                registration, row["display_name"], row["identity_label"],
-                row["checkpoint_number"], row["recognized_at"], f"{row['similarity']:.4f}",
-            ])
-        return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=attendance.csv"})
+        writer.writerow(
+            ["Identity", "Name"]
+            + [f"Checkpoint {item['checkpoint_number']}" for item in detail["checkpoints"]]
+            + ["Attended", "Completed checkpoints", "Attendance percentage"]
+        )
+        for student in detail["roster"]:
+            writer.writerow(
+                [student["identity_label_snapshot"], student["display_name_snapshot"]]
+                + [cell["status"] for cell in student["cells"]]
+                + [
+                    student["attended_count"], detail["completed_checkpoint_count"],
+                    "" if student["attendance_percentage"] is None else student["attendance_percentage"],
+                ]
+            )
+        safe_title = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in detail["session"]["title"]
+        ).strip("_") or f"session_{session_id}"
+        return Response(
+            output.getvalue(), mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}_attendance.csv"'},
+        )
 
     @app.get("/api/monitor")
     def monitor_api():
