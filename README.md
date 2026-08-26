@@ -213,15 +213,26 @@ status; manually corrected CSV cells are labelled `(manual)`.
 
 ### 8. Start recognition from the dashboard
 
-Choose camera source `0` and click **Start Camera**. The dashboard launches the
+Leave the camera source on **Auto detect** and click **Start Camera**. The
+application checks camera indices 0–3 and uses the first device that returns a
+real frame. A specific camera can still be selected when multiple devices are
+connected. The dashboard launches the
 recognition and liveness pipeline, shows its preview, and displays any startup
-error. Use source `1` when a second camera is connected. Click **Stop Camera**
+error. Click **Stop Camera**
 to close the webcam and recognition process cleanly.
 
 Close Windows Camera, Teams, Zoom, and browser camera tabs before starting;
 Windows normally permits only one application to control the webcam. Preview
 frames are published on a background thread as a latest-frame stream at up to
 10 FPS, so a slow browser cannot pause recognition or accumulate delayed frames.
+
+The camera controller now verifies that the device produces a real frame before
+reporting it as ready. Brief dropped frames are retried automatically. If the
+camera disconnects or stops returning frames, recognition releases the device,
+attempts to reconnect, clears stale face/liveness tracking state, and resumes
+without restarting the attendance session. The dashboard shows the selected
+source, preview health, and recovery count, and hides previews older than four
+seconds instead of displaying a frozen image.
 
 For command-line debugging, the recognizer can still be started directly:
 
@@ -236,6 +247,20 @@ cooldown. These controls can be adjusted:
 
 ```bash
 python src/realtime_recognition.py --process-every 2 --confirmation-frames 3 --cooldown-seconds 10
+```
+
+Camera recovery defaults to five tolerated read failures followed by five
+reconnection attempts at one-second intervals. These settings can be adjusted:
+
+```bash
+python src/realtime_recognition.py --camera-read-failures 5 --camera-reconnect-attempts 5 --camera-reconnect-delay 1
+```
+
+For a safe camera-only check that neither records attendance nor writes event
+logs, run:
+
+```bash
+python src/realtime_recognition.py --headless --max-frames 30 --no-attendance-api --no-event-log --no-ui-frame
 ```
 
 The dashboard-managed recognizer reads the private device token from

@@ -14,7 +14,27 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from attendance_db import AttendanceDatabase  # noqa: E402
-from web_app import create_app  # noqa: E402
+from camera_reliability import connect_camera  # noqa: E402
+from web_app import LatestFrame, create_app  # noqa: E402
+
+
+class FakeCapture:
+    def __init__(self, opened: bool, frame=None) -> None:
+        self.opened = opened
+        self.frame = frame
+        self.released = False
+
+    def isOpened(self) -> bool:
+        return self.opened
+
+    def read(self):
+        return self.frame is not None, self.frame
+
+    def set(self, *_args) -> bool:
+        return True
+
+    def release(self) -> None:
+        self.released = True
 
 
 class FakeCameraManager:
@@ -78,6 +98,9 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertIn(b"Live attendance", response.data)
         self.assertIn(b"camera-feed", response.data)
         self.assertIn(b"Start Camera", response.data)
+        self.assertIn(b"Auto detect", response.data)
+        self.assertIn(b"Preview", response.data)
+        self.assertIn(b"Recoveries", response.data)
         self.assertIn(b"Use 8-minute test preset", response.data)
         self.assertNotIn(b"Register student", response.data)
         self.assertNotIn(b"Password", response.data)
@@ -228,6 +251,48 @@ class AttendanceMonitorTest(unittest.TestCase):
         fetched = self.client.get("/api/camera-frame")
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.data, jpeg)
+
+    def test_camera_health_moves_from_starting_to_running_after_first_frame(self) -> None:
+        self.camera.start("0")
+        starting = self.client.get("/api/monitor").get_json()["camera"]
+        self.assertEqual(starting["state"], "starting")
+        self.assertFalse(starting["preview"]["fresh"])
+
+        self.client.post(
+            "/api/camera-frame", data=b"\xff\xd8fresh\xff\xd9", content_type="image/jpeg",
+            headers={"X-Device-Token": "camera-test-token"},
+        )
+        running = self.client.get("/api/monitor").get_json()["camera"]
+        self.assertEqual(running["state"], "running")
+        self.assertTrue(running["preview"]["fresh"])
+        health = self.client.get("/health").get_json()
+        self.assertEqual(health["status"], "ok")
+        self.assertTrue(health["camera"]["preview"]["fresh"])
+
+    def test_stale_preview_is_not_served(self) -> None:
+        now = [100.0]
+        latest = LatestFrame(stale_after_seconds=4.0, clock=lambda: now[0])
+        latest.put(b"jpeg")
+        self.assertEqual(latest.get(fresh_only=True), b"jpeg")
+        now[0] = 105.0
+        self.assertIsNone(latest.get(fresh_only=True))
+        self.assertFalse(latest.status()["fresh"])
+
+    def test_camera_connection_retries_until_a_frame_arrives(self) -> None:
+        captures = [FakeCapture(False), FakeCapture(True), FakeCapture(True, frame="frame")]
+        delays = []
+
+        def factory(_source):
+            return captures.pop(0)
+
+        capture, frame, attempt = connect_camera(
+            0, attempts=3, delay_seconds=0.25,
+            capture_factory=factory, sleeper=delays.append,
+        )
+        self.assertEqual(frame, "frame")
+        self.assertEqual(attempt, 3)
+        self.assertFalse(capture.released)
+        self.assertEqual(delays, [0.25, 0.25])
 
     def test_camera_can_be_started_and_stopped_from_dashboard(self) -> None:
         page = self.client.get("/")

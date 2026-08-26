@@ -23,6 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from camera_reliability import connect_camera
 from liveness import (
     FaceLandmarkAnalyzer,
     LivenessController,
@@ -88,7 +89,7 @@ class FaceTrack:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", default="0", help="Camera index or video/image path.")
+    parser.add_argument("--source", default="auto", help="auto, a camera index, or video/image path.")
     parser.add_argument("--process-every", type=int, default=2)
     parser.add_argument("--confirmation-frames", type=int, default=3)
     parser.add_argument("--history-size", type=int, default=5)
@@ -106,6 +107,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-token-file", type=Path, default=DEFAULT_DEVICE_TOKEN)
     parser.add_argument("--attendance-sync-seconds", type=float, default=30.0)
     parser.add_argument("--ui-frame-fps", type=float, default=10.0)
+    parser.add_argument("--camera-read-failures", type=int, default=5)
+    parser.add_argument("--camera-reconnect-attempts", type=int, default=5)
+    parser.add_argument("--camera-reconnect-delay", type=float, default=1.0)
     parser.add_argument("--no-attendance-api", action="store_true")
     parser.add_argument("--no-ui-frame", action="store_true")
     return parser.parse_args()
@@ -134,6 +138,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--attendance-sync-seconds must be at least 5 seconds")
     if not 0.5 <= args.ui_frame_fps <= 15:
         raise ValueError("--ui-frame-fps must be between 0.5 and 15")
+    if args.camera_read_failures < 1:
+        raise ValueError("--camera-read-failures must be at least 1")
+    if args.camera_reconnect_attempts < 1:
+        raise ValueError("--camera-reconnect-attempts must be at least 1")
+    if not 0 <= args.camera_reconnect_delay <= 30:
+        raise ValueError("--camera-reconnect-delay must be between 0 and 30 seconds")
 
 
 def intersection_over_union(
@@ -458,23 +468,45 @@ def source_value(value: str) -> int | str:
     return int(value) if value.isdecimal() else value
 
 
+def report_camera_status(status: str, **details: object) -> None:
+    print(json.dumps({"camera_status": status, **details}, ensure_ascii=False), flush=True)
+
+
 def main() -> None:
     args = parse_args()
     validate_args(args)
     source = source_value(args.source)
-    is_camera = isinstance(source, int)
-    capture = cv2.VideoCapture(source)
-    if not capture.isOpened():
-        windows_hint = (
-            " Close Windows Camera, Teams, Zoom, or browser camera tabs and check "
-            "Settings > Privacy & security > Camera."
-            if is_camera
-            else ""
-        )
-        raise RuntimeError(
-            f"Could not open {'camera index' if is_camera else 'source'} {args.source}. "
-            f"Check camera permissions, index, or file path.{windows_hint}"
-        )
+    camera_candidates = list(range(4)) if str(source).lower() == "auto" else (
+        [source] if isinstance(source, int) else []
+    )
+    is_camera = bool(camera_candidates)
+    pending_frame = None
+    if is_camera:
+        for candidate in camera_candidates:
+            report_camera_status("starting", source=candidate)
+            try:
+                capture, pending_frame, startup_attempt = connect_camera(
+                    candidate,
+                    args.camera_reconnect_attempts if len(camera_candidates) == 1 else 3,
+                    args.camera_reconnect_delay,
+                )
+            except RuntimeError:
+                continue
+            source = candidate
+            report_camera_status("ready", source=source, attempt=startup_attempt)
+            break
+        else:
+            tried = ", ".join(str(candidate) for candidate in camera_candidates)
+            raise RuntimeError(
+                f"No camera provided frames (tried indices {tried}). "
+                "Close other camera applications and check Windows camera permission."
+            )
+    else:
+        capture = cv2.VideoCapture(source)
+        if not capture.isOpened():
+            raise RuntimeError(
+                f"Could not open source {args.source}. Check the file path and format."
+            )
     runtime = SFaceRuntime(args.min_similarity)
     landmark_analyzer = FaceLandmarkAnalyzer()
     liveness = LivenessController(timeout_seconds=args.liveness_timeout)
@@ -495,17 +527,52 @@ def main() -> None:
     displayed_fps = 0.0
     last_ui_frame = float("-inf")
     mirror = is_camera and not args.no_mirror
+    consecutive_read_failures = 0
+    reconnect_count = 0
     print(
-        f"Recognition started: source={args.source}, threshold={runtime.threshold:.4f}. "
+        f"Recognition started: source={source}, threshold={runtime.threshold:.4f}. "
         "Press Q or Esc to stop.", flush=True,
     )
     try:
         while True:
-            success, frame = capture.read()
+            if pending_frame is not None:
+                success, frame = True, pending_frame
+                pending_frame = None
+            else:
+                success, frame = capture.read()
             if not success or frame is None:
-                if is_camera and frame_number == 0:
-                    raise RuntimeError("Camera opened but did not return a frame")
-                break
+                if not is_camera:
+                    break
+                consecutive_read_failures += 1
+                if consecutive_read_failures < args.camera_read_failures:
+                    if consecutive_read_failures == 1:
+                        report_camera_status(
+                            "degraded", source=source,
+                            message="A camera frame was dropped; retrying.",
+                        )
+                    time.sleep(0.05)
+                    continue
+                report_camera_status(
+                    "reconnecting", source=source,
+                    reconnect_count=reconnect_count,
+                )
+                capture.release()
+                capture, pending_frame, reconnect_attempt = connect_camera(
+                    source, args.camera_reconnect_attempts, args.camera_reconnect_delay
+                )
+                reconnect_count += 1
+                consecutive_read_failures = 0
+                tracker = TrackManager(args.history_size)
+                for track_id in list(liveness.sessions):
+                    liveness.reset(track_id)
+                report_camera_status(
+                    "reconnected", source=source, attempt=reconnect_attempt,
+                    reconnect_count=reconnect_count,
+                )
+                continue
+            if consecutive_read_failures:
+                consecutive_read_failures = 0
+                report_camera_status("ready", source=source, reconnect_count=reconnect_count)
             frame_number += 1
             if mirror:
                 frame = cv2.flip(frame, 1)

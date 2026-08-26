@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -30,33 +31,56 @@ DEFAULT_LABELS_PATH = ROOT / "models" / "sface" / "labels.json"
 
 
 class LatestFrame:
-    def __init__(self) -> None:
+    def __init__(self, stale_after_seconds: float = 4.0, clock=time.monotonic) -> None:
         self._condition = threading.Condition()
         self._jpeg: bytes | None = None
         self._sequence = 0
+        self._updated_at: float | None = None
+        self._stale_after_seconds = stale_after_seconds
+        self._clock = clock
 
     def put(self, jpeg: bytes) -> None:
         with self._condition:
             self._jpeg = jpeg
             self._sequence += 1
+            self._updated_at = self._clock()
             self._condition.notify_all()
 
-    def get(self) -> bytes | None:
+    def get(self, fresh_only: bool = False) -> bytes | None:
         with self._condition:
+            if fresh_only and not self._is_fresh_unlocked():
+                return None
             return self._jpeg
 
     def clear(self) -> None:
         with self._condition:
             self._jpeg = None
             self._sequence += 1
+            self._updated_at = None
             self._condition.notify_all()
+
+    def _is_fresh_unlocked(self) -> bool:
+        return (
+            self._jpeg is not None and self._updated_at is not None
+            and self._clock() - self._updated_at <= self._stale_after_seconds
+        )
+
+    def status(self) -> dict:
+        with self._condition:
+            age = None if self._updated_at is None else max(0.0, self._clock() - self._updated_at)
+            return {
+                "has_frame": self._jpeg is not None,
+                "fresh": self._is_fresh_unlocked(),
+                "age_seconds": None if age is None else round(age, 1),
+                "sequence": self._sequence,
+            }
 
     def wait_for_next(self, previous_sequence: int) -> tuple[bytes | None, int]:
         with self._condition:
-            self._condition.wait_for(
+            changed = self._condition.wait_for(
                 lambda: self._sequence != previous_sequence, timeout=2.0
             )
-            return self._jpeg, self._sequence
+            return (self._jpeg if changed and self._is_fresh_unlocked() else None), self._sequence
 
 
 class CameraProcessManager:
@@ -67,6 +91,10 @@ class CameraProcessManager:
         self._process: subprocess.Popen[str] | None = None
         self._lines: deque[str] = deque(maxlen=30)
         self._requested_stop = False
+        self._phase = "stopped"
+        self._source: str | None = None
+        self._started_at: float | None = None
+        self._reconnect_count = 0
 
     def _drain_output(self, process: subprocess.Popen[str]) -> None:
         if process.stdout is None:
@@ -76,16 +104,31 @@ class CameraProcessManager:
             if cleaned:
                 with self._lock:
                     self._lines.append(cleaned)
+                    try:
+                        payload = json.loads(cleaned)
+                    except json.JSONDecodeError:
+                        payload = None
+                    if isinstance(payload, dict) and payload.get("camera_status"):
+                        self._phase = str(payload["camera_status"])
+                        if payload.get("source") is not None:
+                            self._source = str(payload["source"])
+                        self._reconnect_count = int(payload.get("reconnect_count", self._reconnect_count))
 
-    def start(self, source: str = "0") -> dict:
+    def start(self, source: str = "auto") -> dict:
         normalized = source.strip()
-        if not normalized.isdecimal() or not 0 <= int(normalized) <= 9:
-            raise ValueError("Camera source must be a number from 0 to 9")
+        if normalized.lower() != "auto" and (
+            not normalized.isdecimal() or not 0 <= int(normalized) <= 9
+        ):
+            raise ValueError("Camera source must be auto or a number from 0 to 9")
         with self._lock:
             if self._process is not None and self._process.poll() is None:
                 return self.status_unlocked()
             self._lines.clear()
             self._requested_stop = False
+            self._phase = "starting"
+            self._source = normalized
+            self._started_at = time.monotonic()
+            self._reconnect_count = 0
             command = [
                 sys.executable,
                 str(ROOT / "src" / "realtime_recognition.py"),
@@ -111,7 +154,10 @@ class CameraProcessManager:
     def status_unlocked(self) -> dict:
         process = self._process
         if process is None:
-            return {"state": "stopped", "message": "Camera is stopped", "recent_output": []}
+            return {
+                "state": "stopped", "phase": "stopped", "message": "Camera is stopped",
+                "recent_output": [], "source": self._source, "reconnect_count": self._reconnect_count,
+            }
         return_code = process.poll()
         if return_code is None:
             state = "running"
@@ -122,7 +168,14 @@ class CameraProcessManager:
         else:
             state = "error"
             message = self._lines[-1] if self._lines else f"Recognition process exited with code {return_code}"
-        return {"state": state, "message": message, "recent_output": list(self._lines)[-5:]}
+        return {
+            "state": state, "phase": self._phase, "message": message,
+            "recent_output": list(self._lines)[-5:], "source": self._source,
+            "reconnect_count": self._reconnect_count, "pid": process.pid,
+            "uptime_seconds": (
+                None if self._started_at is None else round(time.monotonic() - self._started_at, 1)
+            ),
+        }
 
     def status(self) -> dict:
         with self._lock:
@@ -139,6 +192,8 @@ class CameraProcessManager:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=3)
+        with self._lock:
+            self._phase = "stopped"
         return self.status()
 
 
@@ -193,8 +248,31 @@ def create_app(
     frames = LatestFrame()
     camera = camera_manager or CameraProcessManager()
     app.extensions["camera_manager"] = camera
+    app.extensions["latest_camera_frame"] = frames
     if camera_manager is None:
         atexit.register(camera.stop)
+
+    def camera_status() -> dict:
+        process_status = dict(camera.status())
+        preview = frames.status()
+        process_status["preview"] = preview
+        if process_status.get("state") != "running":
+            return process_status
+        phase = process_status.get("phase", "running")
+        if preview["fresh"]:
+            process_status["state"] = "running"
+            process_status["message"] = "Camera and live preview are healthy"
+        elif phase in {"degraded", "reconnecting"} or preview["has_frame"]:
+            process_status["state"] = "recovering"
+            age = preview["age_seconds"]
+            process_status["message"] = (
+                f"Camera is reconnecting; last preview frame was {age:.1f}s ago"
+                if age is not None else "Camera is reconnecting"
+            )
+        else:
+            process_status["state"] = "starting"
+            process_status["message"] = "Camera process started; waiting for the first frame"
+        return process_status
 
     def require_device() -> None:
         supplied = request.headers.get("X-Device-Token", "")
@@ -223,7 +301,7 @@ def create_app(
     @app.get("/")
     def dashboard():
         return render_template(
-            "dashboard.html", data=database.monitor_data(), camera=camera.status()
+            "dashboard.html", data=database.monitor_data(), camera=camera_status()
         )
 
     @app.get("/sessions")
@@ -240,8 +318,11 @@ def create_app(
     @app.post("/camera/start")
     def start_camera():
         try:
-            status = camera.start(request.form.get("camera_source", "0"))
-            flash(status["message"], "success" if status["state"] == "running" else "error")
+            status = camera.start(request.form.get("camera_source", "auto"))
+            if status["state"] == "running":
+                flash("Camera startup requested. Waiting for the first live frame.", "success")
+            else:
+                flash(status["message"], "error")
         except (OSError, ValueError) as error:
             flash(f"Camera could not start: {error}", "error")
         return redirect(url_for("dashboard"))
@@ -333,7 +414,7 @@ def create_app(
     @app.get("/api/monitor")
     def monitor_api():
         data = database.monitor_data()
-        data["camera"] = camera.status()
+        data["camera"] = camera_status()
         return jsonify(data)
 
     @app.post("/api/recognition-events")
@@ -356,7 +437,7 @@ def create_app(
                 return jsonify({"error": "JPEG frame required"}), 400
             frames.put(bytes(request.data))
             return "", 204
-        jpeg = frames.get()
+        jpeg = frames.get(fresh_only=True)
         if jpeg is None:
             return "", 404
         return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store, max-age=0"})
@@ -384,7 +465,7 @@ def create_app(
 
     @app.get("/health")
     def health():
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "camera": camera_status()})
 
     return app
 
