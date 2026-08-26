@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Recognition Validation · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Deployment evidence</p><h1>Recognition validation</h1><p>The deployed classifier is measured using its locked unknown-person threshold.</p></div>
+  <div class="page-actions"><a class="button ghost" href="{{ url_for('dashboard') }}">Back to dashboard</a></div>
+</div>
+{% if report_error %}<div class="flash error">{{ report_error }}</div>{% endif %}
+{% if not report %}
+<section class="panel empty"><strong>No validation report yet</strong><p>Run <code>python src/validate_recognition.py</code>, then refresh this page.</p><p class="muted">Private validation photographs and generated reports remain outside Git.</p></section>
+{% else %}
+<section class="panel validation-banner {{ report.status }}">
+  <div><p class="eyebrow">Validation status</p><h2>{{ report.status|upper }}</h2><p>{% if report.deployment_ready %}All configured recognition gates passed.{% elif report.status == 'incomplete' %}Enrolled recognition was measured, but real unknown-person validation is still required.{% else %}One or more configured recognition gates failed.{% endif %}</p></div>
+  <span class="badge {{ report.status }}">{{ 'Deployment ready' if report.deployment_ready else 'Not deployment ready' }}</span>
+</section>
+<section class="report-stats">
+  <article><strong>{{ '—' if report.known.detection_rate is none else '%.1f%%'|format(report.known.detection_rate * 100) }}</strong><span>Known face detection</span></article>
+  <article><strong>{{ '—' if report.known.identification_rate is none else '%.1f%%'|format(report.known.identification_rate * 100) }}</strong><span>Known identification</span></article>
+  <article><strong>{{ '—' if report.unknown.detection_rate is none else '%.1f%%'|format(report.unknown.detection_rate * 100) }}</strong><span>Unknown face detection</span></article>
+  <article><strong>{{ '—' if report.unknown.rejection_rate is none else '%.1f%%'|format(report.unknown.rejection_rate * 100) }}</strong><span>Unknown rejection</span></article>
+</section>
+{% if report.notices %}<section class="panel"><div class="panel-heading"><div><h2>Required attention</h2><p>These items prevent a deployment-ready result.</p></div></div><ul class="validation-notices">{% for notice in report.notices %}<li>{{ notice }}</li>{% endfor %}</ul></section>{% endif %}
+<section class="panel">
+  <div class="panel-heading"><div><h2>Per-person results</h2><p>Held-out enrolled photographs only; no training images are counted.</p></div><span class="badge">Threshold {{ '%.3f'|format(report.locked_unknown_threshold) }}</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Identity</th><th>Samples</th><th>Detected</th><th>Correct</th><th>Rejected</th><th>Misidentified</th><th>Accuracy</th><th>Mean similarity</th></tr></thead><tbody>
+  {% for item in report.per_identity %}<tr><td><strong>{{ item.identity|replace('_', ' ')|replace('-', ' ')|title }}</strong><small>{{ item.identity }}</small></td><td>{{ item.samples }}</td><td>{{ item.detected }}</td><td>{{ item.correct }}</td><td>{{ item.rejected }}</td><td>{{ item.misidentified }}</td><td>{{ '—' if item.accuracy is none else '%.1f%%'|format(item.accuracy * 100) }}</td><td>{{ '—' if item.mean_similarity is none else '%.3f'|format(item.mean_similarity) }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="panel"><div class="panel-heading"><div><h2>Validation configuration</h2><p>This report does not change or recalibrate the model.</p></div></div><div class="validation-meta"><span>Model<strong>{{ report.model }}</strong></span><span>Classifier<strong>{{ report.classifier }}</strong></span><span>Known samples<strong>{{ report.known.samples }}</strong></span><span>Unknown samples<strong>{{ report.unknown.samples }}</strong></span><span>Generated<strong>{{ report.generated_at|local_datetime }}</strong></span></div></section>
+{% endif %}
+{% endblock %}

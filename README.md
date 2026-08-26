@@ -146,7 +146,30 @@ calibration simulates unknown users by excluding each validation identity from
 the comparison. A final deployment threshold still requires testing with
 genuinely unenrolled, consented participants.
 
-### 5. Start the local dashboard
+### 5. Validate deployed recognition
+
+Run the deployed classifier against the locked threshold without retraining or
+recalibrating it:
+
+```bash
+python src/validate_recognition.py
+```
+
+By default, enrolled accuracy is evaluated on the held-out original test split.
+For real unknown-person rejection, place consented photographs of people who
+are not enrolled under `data/recognition_validation/unknown/`. This directory,
+the generated JSON/CSV report, model files, and all images are excluded from
+Git. See `examples/recognition_validation/` for the safe folder layout.
+
+The validator reports face-detection rate, known-person identification rate,
+false rejects, misidentifications, unknown rejection, per-person results, and a
+deployment status. It reports `INCOMPLETE` when real unknown-person images are
+missing; simulated impostor scores are not presented as final deployment proof.
+Use `--require-unknown` in a deployment check when a missing unknown set should
+return a non-zero exit code. Open **Recognition validation** in the local
+dashboard to view the most recent report.
+
+### 6. Start the local dashboard
 
 Initialize the private local database and start the dashboard:
 
@@ -163,7 +186,7 @@ new attendance session stores its own roster snapshot. The database, local
 session secret, and protected camera device token are stored under `instance/`,
 which is excluded from Git.
 
-### 6. Create a scheduled class
+### 7. Create a scheduled class
 
 Use the **Start attendance session** form on the dashboard and set:
 
@@ -196,7 +219,7 @@ saved roster, checkpoint windows, present/absent/open/upcoming status, per-perso
 and overall percentages, and a checkpoint-wise CSV export. A person becomes
 absent only after that checkpoint window closes.
 
-### 7. Manage completed attendance
+### 8. Manage completed attendance
 
 Open a session report and use **Search roster** to find a person by name, model
 label, or registration number. A completed checkpoint can be corrected to
@@ -211,7 +234,7 @@ previous status, new status, reason, time, and operator in the session's audit
 trail. Reports, percentages, checkpoint totals, and CSV exports use the effective
 status; manually corrected CSV cells are labelled `(manual)`.
 
-### 8. Start recognition from the dashboard
+### 9. Start recognition from the dashboard
 
 Leave the camera source on **Auto detect** and click **Start Camera**. The
 application checks camera indices 0–3 and uses the first device that returns a

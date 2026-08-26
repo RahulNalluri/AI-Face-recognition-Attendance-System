@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from attendance_db import AttendanceDatabase  # noqa: E402
 from camera_reliability import connect_camera  # noqa: E402
+from recognition_validation import summarize_records  # noqa: E402
 from web_app import LatestFrame, create_app  # noqa: E402
 
 
@@ -66,8 +67,10 @@ class AttendanceMonitorTest(unittest.TestCase):
             json.dumps({"0": "student_one", "1": "student_two"}), encoding="utf-8"
         )
         self.camera = FakeCameraManager()
+        self.validation_report_path = Path(self.temporary.name) / "recognition_validation.json"
         self.app = create_app(
-            self.database_path, camera_manager=self.camera, labels_path=self.labels_path
+            self.database_path, camera_manager=self.camera, labels_path=self.labels_path,
+            validation_report_path=self.validation_report_path,
         )
         self.app.config.update(TESTING=True, DEVICE_TOKEN="camera-test-token")
         self.client = self.app.test_client()
@@ -104,6 +107,36 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertIn(b"Use 8-minute test preset", response.data)
         self.assertNotIn(b"Register student", response.data)
         self.assertNotIn(b"Password", response.data)
+
+    def test_recognition_validation_metrics_and_dashboard(self) -> None:
+        records = [
+            {"expected": "student_one", "predicted": "student_one", "detected": True, "similarity": 0.82},
+            {"expected": "student_two", "predicted": "student_two", "detected": True, "similarity": 0.79},
+            {"expected": "Unknown", "predicted": "Unknown", "detected": True, "similarity": 0.31},
+            {"expected": "Unknown", "predicted": "Unknown", "detected": True, "similarity": 0.28},
+        ]
+        report = summarize_records(records, ["student_one", "student_two"])
+        self.assertEqual(report["status"], "passed")
+        self.assertTrue(report["deployment_ready"])
+        report.update({
+            "model": "OpenCV SFace 2021dec", "classifier": "knn_1",
+            "locked_unknown_threshold": 0.49,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        self.validation_report_path.write_text(json.dumps(report), encoding="utf-8")
+        page = self.client.get("/validation")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Deployment ready", page.data)
+        self.assertIn(b"Student One", page.data)
+
+    def test_validation_is_incomplete_without_real_unknown_people(self) -> None:
+        report = summarize_records(
+            [{"expected": "student_one", "predicted": "student_one", "detected": True, "similarity": 0.8}],
+            ["student_one"],
+        )
+        self.assertEqual(report["status"], "incomplete")
+        self.assertFalse(report["deployment_ready"])
+        self.assertIn("unknown-person images are missing", report["notices"][0].lower())
 
     def test_attendance_is_marked_once_per_checkpoint(self) -> None:
         first = self.post_event(self.event(self.start + timedelta(minutes=1)))

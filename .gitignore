@@ -10,6 +10,7 @@ data/raw/
 data/legacy_augmented/
 data/leakage_free/
 data/face_cropped/
+data/recognition_validation/
 
 # Generated models, arrays, reports and visual checks
 models/*

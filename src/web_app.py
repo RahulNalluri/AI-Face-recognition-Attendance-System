@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = ROOT / "web"
 INSTANCE_ROOT = ROOT / "instance"
 DEFAULT_LABELS_PATH = ROOT / "models" / "sface" / "labels.json"
+DEFAULT_VALIDATION_REPORT = ROOT / "artifacts" / "evaluation" / "recognition_validation" / "report.json"
 
 
 class LatestFrame:
@@ -229,6 +230,7 @@ def create_app(
     database_path: Path | str | None = None,
     camera_manager: CameraProcessManager | None = None,
     labels_path: Path | str | None = DEFAULT_LABELS_PATH,
+    validation_report_path: Path | str | None = DEFAULT_VALIDATION_REPORT,
 ) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_ROOT / "templates"), static_folder=str(WEB_ROOT / "static"))
     app.config.update(
@@ -236,6 +238,7 @@ def create_app(
         DATABASE_PATH=str(database_path or os.environ.get("ATTENDANCE_DATABASE", DEFAULT_DATABASE)),
         DEVICE_TOKEN=local_secret("device_token.txt", "ATTENDANCE_DEVICE_TOKEN"),
         APP_TIMEZONE=os.environ.get("ATTENDANCE_TIMEZONE", "Asia/Kolkata"),
+        VALIDATION_REPORT_PATH=str(validation_report_path) if validation_report_path else "",
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -307,6 +310,21 @@ def create_app(
     @app.get("/sessions")
     def session_history():
         return render_template("history.html", history=database.session_history())
+
+    @app.get("/validation")
+    def recognition_validation():
+        report_path = Path(app.config["VALIDATION_REPORT_PATH"]) if app.config["VALIDATION_REPORT_PATH"] else None
+        report = None
+        report_error = None
+        if report_path and report_path.exists():
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                report_error = f"Validation report could not be read: {error}"
+        return render_template(
+            "validation.html", report=report, report_error=report_error,
+            report_path=str(report_path) if report_path else "",
+        )
 
     @app.get("/sessions/<int:session_id>")
     def session_detail(session_id: int):
