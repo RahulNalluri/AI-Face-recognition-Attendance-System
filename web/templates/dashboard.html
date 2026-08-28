@@ -6,6 +6,7 @@
   <div class="page-actions"><a class="button ghost" href="{{ url_for('session_history') }}">Session history</a>{% if data.session %}<a class="button ghost" href="{{ url_for('export_session_csv', session_id=data.session.id) }}">Export attendance</a>{% endif %}</div>
 </div>
 
+{% include "camera_section.html" %}
 <section class="monitor-grid">
   <article class="panel camera-panel">
     <div class="panel-heading"><div><h2>Camera</h2><p id="camera-state">{{ camera.message }}</p></div><span id="camera-badge" class="badge {{ camera.state }}">{{ camera.state }}</span></div>
@@ -73,12 +74,13 @@ function localTime(value){return value?new Date(value).toLocaleString([], {day:'
 function cell(text,tag='td'){const node=document.createElement(tag);node.textContent=text;return node;}
 function renderCheckpoints(items){const list=document.getElementById('checkpoints');if(!list)return;list.replaceChildren();const now=Date.now();for(const item of items){const opens=new Date(item.opens_at).getTime(),closes=new Date(item.closes_at).getTime();const status=now<opens?'upcoming':(now<=closes?'open':'closed');const row=document.createElement('div'),label=document.createElement('span'),time=document.createElement('strong'),count=document.createElement('small'),badge=document.createElement('span');label.textContent='Check '+item.checkpoint_number;time.textContent=localTime(item.opens_at);count.textContent=item.attendance_count+' marked';badge.textContent=status;badge.className='badge '+status;row.append(label,time,count,badge);list.append(row);}}
 const renderedSessionId={{ (data.session.id if data.session else none)|tojson }};
+const renderedCameraSectionId={{ camera_section.group_id|tojson }};
 async function refreshLogs(){
   try{
     const response=await fetch('{{ url_for("monitor_api") }}',{cache:'no-store'});
     const data=await response.json();
     // Another tab may have started a different class: refresh the whole session card.
-    if((data.session?.id??null)!==renderedSessionId){window.location.reload();return;}
+    if((data.session?.id??null)!==renderedSessionId || (data.camera_section?.group_id??null)!==renderedCameraSectionId){window.location.reload();return;}
     document.getElementById('student-count').textContent=data.students.length;
     document.getElementById('attendance-count').textContent=data.attendance.length;
     document.getElementById('log-count').textContent=data.logs.length;

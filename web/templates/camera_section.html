@@ -1,0 +1,9 @@
+<section class="panel">
+  <div class="panel-heading"><div><h2>Camera section</h2><p>Automatic attendance runs only for the assigned section.</p></div><span class="badge {{ 'active' if camera_section.group_id else 'closed' }}">{{ camera_section.name or 'Manual sessions only' }}</span></div>
+  <form class="camera-section-form" method="post" action="{{ url_for('select_camera_section') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Section monitored by this camera<select name="group_id"><option value="">None — manual sessions only</option>{% for group in groups %}<option value="{{ group.id }}" {% if group.id == camera_section.group_id %}selected{% endif %}>{{ group.name }}</option>{% endfor %}</select></label>
+    <button class="button primary" type="submit">Assign camera section</button>
+  </form>
+  <p class="muted">Other sections may use the same period times; their timetables do not run on this camera. Close any current session before switching. Assigning a section during its first checkpoint window may start its class immediately.</p>
+</section>

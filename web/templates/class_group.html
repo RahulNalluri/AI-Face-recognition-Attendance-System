@@ -2,24 +2,40 @@
 {% block title %}{{ group.name or 'Create Class Group' }} · AttendAI{% endblock %}
 {% block content %}
 <div class="page-heading">
-  <div><p class="eyebrow">Student roster</p><h1>{{ group.name or 'Create class group' }}</h1><p>Select the students who should be counted in this class.</p></div>
+  <div><p class="eyebrow">Section setup</p><h1>{{ group.name or 'Create section' }}</h1><p>Set up the section, select students, and fill its weekly timetable.</p></div>
   <a class="button ghost" href="{{ url_for('class_groups_page') }}">All class groups</a>
 </div>
-<form class="panel form-card" method="post">
+<form id="section-form" class="panel form-card" method="post">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <label>Class name<input name="name" maxlength="80" placeholder="CSE-A · Year 4" value="{{ group.name }}" required></label>
   <label>Description<input name="description" maxlength="300" placeholder="Department, semester, or section (optional)" value="{{ group.description }}"></label>
+  <div class="field-row"><label>Department<input name="department" maxlength="80" placeholder="Computer Science" value="{{ profile.department }}"></label><label>Semester<input name="semester" maxlength="80" placeholder="7" value="{{ profile.semester }}"></label><label>Academic year<input name="academic_year" maxlength="80" placeholder="2026–27" value="{{ profile.academic_year }}"></label></div>
   <div class="panel-heading"><div><h2>Enrolled students</h2><p><span id="selected-count">{{ group.student_ids|length }}</span> selected. A student can belong to more than one class.</p></div><label>Search students<input id="member-search" type="search" placeholder="Name, identity, or registration"></label></div>
   <div class="member-grid">
     {% for student in students %}<label class="member-option" data-search="{{ (student.display_name ~ ' ' ~ student.identity_label ~ ' ' ~ student.registration_number)|lower }}"><input type="checkbox" name="student_ids" value="{{ student.id }}" {% if student.id in group.student_ids %}checked{% endif %}><span><strong>{{ student.display_name }}</strong><small>{{ student.identity_label }}{% if not student.registration_number.startswith('AUTO-') %} · {{ student.registration_number }}{% endif %}</small></span></label>{% else %}<p class="muted">No enrolled identities available. Train or load your local model identities before adding students.</p>{% endfor %}
   </div>
   <p id="no-member-matches" class="muted" hidden>No students match this search.</p>
   <p class="muted">Saving changes affects future sessions only. An empty class can be saved, but cannot start an attendance session.</p>
-  <div class="page-actions"><button class="button primary" type="submit">Save class roster</button>{% if group.id %}<a class="button ghost" href="{{ url_for('dashboard', group_id=group.id, _anchor='session-form') }}">Use class for a session</a>{% endif %}</div>
+  <section id="weekly-grid">
+    <div class="panel-heading"><div><h2>Weekly timetable</h2><p>Fill subjects like a college timetable. Blank cells are free periods.</p></div><span class="badge">{{ profile.grid.timezone }}</span></div>
+    <input type="hidden" name="grid_json" id="grid-json">
+    <div class="field-row"><label>College start time<input id="grid-start" type="time" value="{{ profile.grid.day_start }}" required></label><label>Periods per day<input id="period-count" type="number" min="1" max="10" value="{{ profile.grid.periods|length }}" required></label></div>
+    <h3>Period timings</h3><p class="muted">Break after adds a gap before the next period (for example, lunch). Repeat after 0 means one attendance check at the start of the period.</p>
+    <div class="table-wrap"><table class="period-settings"><thead><tr><th>Period</th><th>Duration (min)</th><th>Break after (min)</th><th>Repeat after (min)</th><th>Open for (min)</th></tr></thead><tbody id="period-settings"></tbody></table></div>
+    <h3>Subjects · Monday to Saturday</h3>
+    <div class="table-wrap"><table class="section-week"><thead id="grid-head"></thead><tbody id="grid-body"></tbody></table></div>
+    <label class="member-option grid-enable"><input id="grid-enabled" type="checkbox" {% if profile.grid.enabled %}checked{% endif %}><span>Enable this section's weekly timetable<small>It runs automatically only when this section is assigned to the camera.</small></span></label>
+    <p class="muted">Save everything together. Edits affect future unprocessed occurrences, not existing attendance. Previously added individual timetable entries are kept; pause any that overlap this grid before enabling it.</p>
+    <noscript><p class="flash error">JavaScript is required to edit and save the weekly grid.</p></noscript>
+  </section>
+  <div class="page-actions"><button class="button primary" type="submit">Save section and timetable</button>{% if group.id %}<a class="button ghost" href="{{ url_for('dashboard', group_id=group.id, _anchor='session-form') }}">Use class for a session</a>{% endif %}</div>
 </form>
 {% endblock %}
 {% block scripts %}<script>
-const memberOptions=[...document.querySelectorAll('.member-option')];
+const memberOptions=[...document.querySelectorAll('.member-option[data-search]')];
 document.getElementById('member-search').addEventListener('input',event=>{const query=event.target.value.trim().toLowerCase();for(const option of memberOptions)option.hidden=!option.dataset.search.includes(query);document.getElementById('no-member-matches').hidden=memberOptions.some(option=>!option.hidden);});
 for(const option of memberOptions)option.querySelector('input').addEventListener('change',()=>{document.getElementById('selected-count').textContent=document.querySelectorAll('input[name="student_ids"]:checked').length;});
-</script>{% endblock %}
+</script>
+<script id="section-grid-data" type="application/json">{{ profile.grid|tojson }}</script>
+<script src="{{ url_for('static', filename='section_grid.js') }}"></script>
+{% endblock %}

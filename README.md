@@ -221,12 +221,29 @@ absent only after that checkpoint window closes.
 
 ### Class groups and student rosters
 
-Open **Class groups → Create class group**, enter a name such as `CSE-A`, and
+Open **Class groups → Create section**, enter a name such as `CSE-A`, and
 select students from the existing enrolled identities. Search by name, identity,
 or registration number to find students. A student may belong to multiple groups;
 this step does not require new photographs or model retraining.
 
-Save the roster, then choose **Use class for a session** (or select its name in
+You can enter department, semester, and academic year and fill a weekly subject
+grid on the same section form. Choose 1–10 periods per day and the college start
+time. Each period has its own duration and **Break after** (for lunch or other
+gaps). Fill Monday–Saturday subject cells; leave free periods blank.
+
+For period attendance, **Repeat after = 0** means a single check at the start;
+use a positive interval for repeated checks during a long lab. **Open for** sets
+the attendance window and must fit inside that interval or period duration.
+Enable the grid when ready and click **Save section and timetable**. Section
+details, the roster, and all grid entries are saved together or not at all.
+
+Existing individual timetable entries are retained. Pause any that overlap the
+new grid in the same section. Grid-managed entries are edited from the section
+form. Clearing a subject disables its scheduled entry while retaining its ID and
+history; restoring it cannot create another occurrence that same day. Academic
+year and semester are descriptive fields, not scheduling date restrictions.
+
+For a manual session, choose **Use class for a session** (or select its name in
 the dashboard's **Class roster** field). Set the session title and checkpoint
 timings as usual. An empty class can be saved but cannot start a session.
 
@@ -239,10 +256,64 @@ include the saved class name.
 
 **All enrolled identities (no class group)** retains the original test workflow:
 it starts with every active identity and can add newly recognized identities to
-that session. Choose a named class when membership must be enforced. Group data
+that session. This option requires the camera assignment to be **None — manual
+sessions only**. Choose a named class when membership must be enforced. Group data
 is stored in the private local database, not in Git. Existing databases are
 upgraded automatically without removing attendance records. This remains a
 login-free local operator interface, not a multi-user access-control system.
+
+### Reusable weekly timetable
+
+The section form is the primary weekly-grid editor. For extra individual slots,
+open **Timetable → Add timetable entry** and select a class group, subject,
+weekday, and start time. Set duration, **Repeat after**, and **Open for**, then
+save with **Enable automatic weekly sessions** checked. Add a separate entry for
+each weekday/subject. For example, Monday at 09:30 with duration 130, repeat 65,
+and open 10 creates attendance windows at 09:30–09:40 and 10:35–10:45, ending
+the session at 11:40. The same entry repeats the following Monday.
+
+Under **Camera section** on the dashboard or timetable page, select the section
+this camera monitors and click **Assign camera section**. Different sections may
+have classes at identical times; only the assigned section's enabled timetable
+runs. With **None — manual sessions only**, automatic creation is disabled.
+Close any currently running session before changing the assignment. When assigned,
+manual sessions must also use that section; mismatched old sessions cannot receive
+camera attendance. If upgrading a database with enabled entries for exactly one
+section, that section is selected once during migration; otherwise choose it
+explicitly. Subsequent restarts preserve the selection, including manual-only mode.
+
+Run the app with `python src/web_app.py` to start the background timetable
+runner. It checks every 15 seconds without needing an open browser. **The app
+and computer must remain running; the timetable does not wake the computer or
+start the camera.** Start the camera from the dashboard for recognition and
+liveness-backed attendance. When served through another launcher, schedules
+are checked by dashboard/timetable requests and recognition events; the
+timetable page shows whether the background runner is active.
+
+- Each occurrence snapshots the current class roster and class name at session
+  creation. No model retraining or new student photographs are needed.
+- One camera supports one section at a time. Enabled entries in the same section
+  cannot overlap; entries in different sections can. Within a section, entries
+  must use the same timezone and end by midnight. Times retain
+  the timezone configured when the entry was created (default `Asia/Kolkata`).
+- A durable entry/date record prevents duplicate sessions across refreshes,
+  restarts, or concurrent checks. Closing a generated session early, editing,
+  or pausing/re-enabling the entry does not recreate that day's occurrence.
+- **Pause** stops future creation; it does not stop a session already created.
+  Edits apply to future unprocessed occurrences, leaving historical reports intact.
+- If the app starts within the first attendance window, the session uses its
+  original scheduled times. If that first window was missed, the occurrence is
+  logged as `missed` without creating a session or automatic absences. Days while
+  the app was entirely offline are not backfilled.
+- If another existing session overlaps, the occurrence is logged as `conflict`
+  and that session is left unchanged. If the roster has become empty, the run is
+  logged as `empty_roster`. These skipped occurrences are not retried that day;
+  a local operator can explicitly start a manual session if needed.
+
+**Next occurrences** previews planned starts. **Recent timetable runs** shows
+created/skipped outcomes and links to generated attendance reports. Timetable
+configuration and execution history stay in the ignored private SQLite database.
+Semester date ranges, holidays, and multi-camera scheduling are not included yet.
 
 ### 8. Manage completed attendance
 
@@ -354,7 +425,7 @@ real-world accuracy.
 ## Planned enhancements
 
 - Passive anti-spoofing in addition to the current active liveness challenge.
-- Reusable timetables for automatic class-session creation.
+- Semester date ranges, holiday exceptions, and multi-camera timetables.
 - Attendance percentages, shortage alerts, and downloadable reports.
 - PostgreSQL, HTTPS, and deployment hardening for multi-device operation.
 - Consent, encryption, biometric-data retention, and deletion controls.

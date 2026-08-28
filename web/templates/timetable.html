@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Weekly Timetable · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Reusable schedule</p><h1>Weekly timetable</h1><p>Repeat your class schedule each week with automatic attendance sessions.</p></div>
+  <a class="button primary" href="{{ url_for('new_timetable') }}">Add timetable entry</a>
+</div>
+{% include "camera_section.html" %}
+<section class="panel">
+  <div class="panel-heading"><h2>Automatic scheduling</h2><span class="badge {{ 'running' if scheduler.background_running else 'scheduled' }}">{{ 'Background runner active' if scheduler.background_running else 'Request-driven checks' }}</span></div>
+  <p>Keep the app running with <code>python src/web_app.py</code>. It checks the timetable every {{ scheduler.interval_seconds }} seconds, even when this page is closed. Start the camera separately to recognize students.</p>
+  {% if not scheduler.background_running %}<p class="muted">This launch mode checks schedules when the dashboard, timetable, or recognition API is used. Use the command above for checks without an open browser.</p>{% endif %}
+  {% if scheduler.last_error %}<p class="flash error">{{ scheduler.last_error }}</p>{% endif %}
+  <p class="muted">Overlaps are blocked within a section, but different sections can share the same times. Only the camera's assigned section runs. If its first checkpoint window is missed, no session or automatic absences are created. Existing manual sessions are never replaced.</p>
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Weekly entries</h2><p>Times use the timezone shown on each entry.</p></div>
+  <div class="table-wrap"><table><thead><tr><th>Day / time</th><th>Class / subject</th><th>Checkpoints</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+  {% for entry in entries %}<tr>
+    <td><strong>{{ weekdays[entry.weekday] }} · {{ entry.start_time }}</strong><small>{{ entry.timezone }} · {{ entry.duration_minutes }} minutes</small></td>
+    <td><strong>{{ entry.title }}</strong><small>{{ entry.group_name }} · {{ entry.member_count }} students</small></td>
+    <td>{{ 'Once at start' if entry.checkpoint_interval_minutes >= entry.duration_minutes else 'Every ' ~ entry.checkpoint_interval_minutes ~ ' min' }}<small>Open for {{ entry.checkpoint_window_minutes }} min</small></td>
+    <td><span class="badge {{ 'active' if entry.enabled else 'closed' }}">{{ 'Enabled' if entry.enabled else 'Paused' }}</span></td>
+    <td><div class="page-actions"><a class="text-link" href="{{ url_for('edit_timetable', entry_id=entry.id) }}">{{ 'Edit section grid' if entry.managed_group_id else 'Edit' }}</a>{% if not entry.managed_group_id %}<form method="post" action="{{ url_for('toggle_timetable', entry_id=entry.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 0 if entry.enabled else 1 }}"><button class="button ghost" type="submit">{{ 'Pause' if entry.enabled else 'Enable' }}</button></form>{% endif %}</div></td>
+  </tr>{% else %}<tr><td colspan="5" class="empty">No weekly entries yet. Create a class roster, then add its subject and weekly start time.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Next occurrences</h2><p>All sections shown; only the assigned camera section will run.</p></div>
+  <div class="checkpoint-cards">{% for entry in upcoming %}<article><span>{{ entry.group_name }}</span><strong>{{ entry.title }}</strong><small>{{ entry.next_start|local_datetime }}</small><small>{{ entry.member_count }} students currently in roster</small></article>{% else %}<p class="muted">No upcoming enabled entries.</p>{% endfor %}</div>
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Recent timetable runs</h2><p>Created or skipped occurrences are recorded once per entry and date.</p></div>
+  <div class="table-wrap"><table><thead><tr><th>Scheduled start</th><th>Class / subject</th><th>Outcome</th><th>Details</th></tr></thead><tbody>
+  {% for run in runs %}<tr><td>{{ run.starts_at|local_datetime }}</td><td><strong>{{ run.title_snapshot }}</strong><small>{{ run.group_name_snapshot }}</small></td><td><span class="badge {{ 'marked' if run.outcome == 'created' else 'scheduled' }}">{{ run.outcome|replace('_', ' ') }}</span></td><td>{{ run.message }}{% if run.session_id %}<small><a class="text-link" href="{{ url_for('session_detail', session_id=run.session_id) }}">View attendance report →</a></small>{% endif %}</td></tr>{% else %}<tr><td colspan="4" class="empty">No timetable runs yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<p class="muted">Editing or pausing an entry does not change sessions already created. A processed occurrence cannot run again that date, even after editing or restarting. Entire days while the app was offline are not backfilled.</p>
+{% endblock %}

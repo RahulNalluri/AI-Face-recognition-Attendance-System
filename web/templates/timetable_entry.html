@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if entry.id else 'Add' }} Timetable Entry · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Weekly recurrence</p><h1>{{ 'Edit' if entry.id else 'Add' }} timetable entry</h1><p>Choose a class, subject, and weekly attendance schedule.</p></div><a class="button ghost" href="{{ url_for('timetable_page') }}">Back to timetable</a></div>
+<div class="session-form-wrap"><form class="panel form-card session-form" method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Class group<select name="group_id" required><option value="">Choose a class</option>{% for group in groups %}<option value="{{ group.id }}" {% if group.id|string == entry.group_id|string %}selected{% endif %}>{{ group.name }} · {{ group.member_count }} students</option>{% endfor %}</select><small><a href="{{ url_for('class_groups_page') }}">Manage class rosters</a>. Students are snapshotted when each session is created.</small></label>
+  <label>Subject / session title<input name="title" value="{{ entry.title }}" maxlength="100" placeholder="Artificial Intelligence" required></label>
+  <div class="field-row"><label>Weekday<select name="weekday" required>{% for day in weekdays %}<option value="{{ loop.index0 }}" {% if loop.index0|string == entry.weekday|string %}selected{% endif %}>{{ day }}</option>{% endfor %}</select></label><label>Start time<input type="time" name="start_time" value="{{ entry.start_time }}" required></label><label>Duration<input type="number" name="duration_minutes" value="{{ entry.duration_minutes }}" min="1" max="1440" required><small>minutes</small></label></div>
+  <p class="muted">Timezone: {{ entry.timezone }}. Repeats every week on the chosen day. Classes must end by midnight; add separate entries for other weekdays.</p>
+  <div class="field-row"><label>Repeat after<input type="number" name="checkpoint_interval_minutes" value="{{ entry.checkpoint_interval_minutes }}" min="1" max="1440" required><small>minutes between attendance checks</small></label><label>Open for<input type="number" name="checkpoint_window_minutes" value="{{ entry.checkpoint_window_minutes }}" min="1" max="1440" required><small>minutes per attendance window</small></label></div>
+  <label class="member-option"><input type="checkbox" name="enabled" {% if entry.enabled %}checked{% endif %}><span>Enable automatic weekly sessions<small>Uncheck to save a paused entry.</small></span></label>
+  <p class="muted">Example: 09:30, duration 130, repeat after 65, open for 10 → checks at 09:30–09:40 and 10:35–10:45. The session ends at 11:40.</p>
+  <p class="muted">Saving an enabled entry during its first attendance window can start today's session immediately. Pausing or editing never changes an existing session or retries today's processed occurrence.</p>
+  <button class="button primary" type="submit">Save timetable</button>
+</form></div>
+{% endblock %}

@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, session, url_for
 
 from attendance_db import AttendanceDatabase, DEFAULT_DATABASE
+from timetable import Timetable, TimetableScheduler, WEEKDAYS
+from section_setup import SectionSetup, normalize_grid
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = ROOT / "web"
@@ -248,6 +250,11 @@ def create_app(
     database.sync_identities(model_labels(labels_path))
     database.backfill_missing_rosters()
     app.extensions["attendance_database"] = database
+    timetable = Timetable(database)
+    sections = SectionSetup(database)
+    scheduler = TimetableScheduler(timetable)
+    app.extensions["timetable"] = timetable
+    app.extensions["timetable_scheduler"] = scheduler
     frames = LatestFrame()
     camera = camera_manager or CameraProcessManager()
     app.extensions["camera_manager"] = camera
@@ -292,7 +299,8 @@ def create_app(
 
     @app.context_processor
     def context() -> dict:
-        return {"csrf_token": session.setdefault("csrf_token", secrets.token_urlsafe(24))}
+        return {"csrf_token": session.setdefault("csrf_token", secrets.token_urlsafe(24)),
+                "camera_section": timetable.camera_section()}
 
     @app.template_filter("local_datetime")
     def local_datetime(value: str) -> str:
@@ -303,9 +311,10 @@ def create_app(
 
     @app.get("/")
     def dashboard():
+        scheduler.check_due()
         return render_template(
             "dashboard.html", data=database.monitor_data(), camera=camera_status(),
-            groups=database.class_groups(), selected_group_id=request.args.get("group_id", type=int),
+            groups=database.class_groups(), selected_group_id=request.args.get("group_id", type=int) or timetable.camera_section()["group_id"],
         )
 
     @app.get("/classes")
@@ -318,6 +327,7 @@ def create_app(
         }
         if group is None:
             abort(404)
+        profile = sections.profile(group_id, app.config["APP_TIMEZONE"])
         status_code = 200
         if request.method == "POST":
             try:
@@ -326,15 +336,25 @@ def create_app(
                     "name": request.form.get("name", ""),
                     "description": request.form.get("description", ""), "student_ids": selected,
                 })
-                saved_id = database.save_class_group(
-                    group["name"], group["description"], selected, group_id,
-                )
-                flash("Class roster saved. Existing session rosters are unchanged.", "success")
+                if "grid_json" in request.form:
+                    raw = json.loads(request.form["grid_json"])
+                    if not isinstance(raw, dict) or not isinstance(raw.get("periods"), list) or not isinstance(raw.get("subjects"), list):
+                        raise ValueError("Invalid timetable grid")
+                    profile.update({field: request.form.get(field, "") for field in ("department", "semester", "academic_year")})
+                    profile["grid"] = normalize_grid(raw)
+                    saved_id = sections.save(
+                        name=group["name"], description=group["description"], student_ids=selected,
+                        group_id=group_id, **profile,
+                    )
+                else:
+                    saved_id = database.save_class_group(group["name"], group["description"], selected, group_id)
+                scheduler.check_due(force=True)
+                flash("Section and roster saved. Existing sessions are unchanged.", "success")
                 return redirect(url_for("edit_class_group", group_id=saved_id))
             except (ValueError, sqlite3.IntegrityError) as error:
                 flash(str(error), "error")
                 status_code = 400
-        return render_template("class_group.html", group=group, students=database.students()), status_code
+        return render_template("class_group.html", group=group, students=database.students(), profile=profile), status_code
 
     @app.route("/classes/new", methods=["GET", "POST"])
     def new_class_group():
@@ -343,6 +363,87 @@ def create_app(
     @app.route("/classes/<int:group_id>", methods=["GET", "POST"])
     def edit_class_group(group_id: int):
         return class_editor(group_id)
+
+    @app.get("/timetable")
+    def timetable_page():
+        scheduler.check_due()
+        return render_template(
+            "timetable.html", entries=timetable.entries(), upcoming=timetable.upcoming(),
+            runs=timetable.runs(), weekdays=WEEKDAYS, scheduler=scheduler.status(),
+            groups=database.class_groups(),
+        )
+
+    @app.post("/camera/section")
+    def select_camera_section():
+        try:
+            value = request.form.get("group_id", "")
+            timetable.select_camera_section(int(value) if value else None)
+            scheduler.check_due(force=True)
+            flash("Camera section updated. Only its enabled timetable will run automatically.", "success")
+        except (ValueError, sqlite3.IntegrityError) as error:
+            flash(str(error), "error")
+        return redirect(url_for("dashboard"))
+
+    def timetable_editor(entry_id=None):
+        managed_group = timetable.managed_group(entry_id) if entry_id is not None else None
+        if managed_group is not None:
+            return redirect(url_for("edit_class_group", group_id=managed_group, _anchor="weekly-grid"))
+        entry = timetable.entry(entry_id) if entry_id is not None else {
+            "id": None, "group_id": request.args.get("group_id", type=int), "title": "",
+            "weekday": 0, "start_time": "09:30", "duration_minutes": 130,
+            "checkpoint_interval_minutes": 65, "checkpoint_window_minutes": 10,
+            "timezone": app.config["APP_TIMEZONE"], "enabled": True,
+        }
+        if entry is None:
+            abort(404)
+        status_code = 200
+        if request.method == "POST":
+            # Preserve submitted values on validation errors, including checkbox state.
+            for field in ("title", "start_time", "group_id", "weekday", "duration_minutes",
+                          "checkpoint_interval_minutes", "checkpoint_window_minutes"):
+                entry[field] = request.form.get(field, "")
+            entry["enabled"] = request.form.get("enabled") == "on"
+            try:
+                saved_id = timetable.save(
+                    group_id=int(entry["group_id"]), title=entry["title"],
+                    weekday=int(entry["weekday"]), start_time=entry["start_time"],
+                    duration_minutes=int(entry["duration_minutes"]),
+                    checkpoint_interval_minutes=int(entry["checkpoint_interval_minutes"]),
+                    checkpoint_window_minutes=int(entry["checkpoint_window_minutes"]),
+                    timezone_name=entry["timezone"], enabled=entry["enabled"], entry_id=entry_id,
+                )
+                scheduler.check_due(force=True)
+                flash("Weekly timetable saved. Existing sessions and today's processed occurrence are unchanged.", "success")
+                return redirect(url_for("edit_timetable", entry_id=saved_id))
+            except (ValueError, sqlite3.IntegrityError) as error:
+                flash(str(error), "error")
+                status_code = 400
+        return render_template(
+            "timetable_entry.html", entry=entry, groups=database.class_groups(), weekdays=WEEKDAYS,
+        ), status_code
+
+    @app.route("/timetable/new", methods=["GET", "POST"])
+    def new_timetable():
+        return timetable_editor()
+
+    @app.route("/timetable/<int:entry_id>", methods=["GET", "POST"])
+    def edit_timetable(entry_id):
+        return timetable_editor(entry_id)
+
+    @app.post("/timetable/<int:entry_id>/toggle")
+    def toggle_timetable(entry_id):
+        if timetable.entry(entry_id) is None:
+            abort(404)
+        try:
+            enabled = request.form.get("enabled")
+            if enabled not in {"0", "1"}:
+                raise ValueError("Choose pause or enable")
+            timetable.set_enabled(entry_id, enabled == "1")
+            scheduler.check_due(force=True)
+            flash("Timetable updated. Already-created attendance sessions are unchanged.", "success")
+        except (ValueError, sqlite3.IntegrityError) as error:
+            flash(str(error), "error")
+        return redirect(url_for("timetable_page"))
 
     @app.get("/sessions")
     def session_history():
@@ -473,8 +574,10 @@ def create_app(
 
     @app.get("/api/monitor")
     def monitor_api():
+        scheduler.check_due()
         data = database.monitor_data()
         data["camera"] = camera_status()
+        data["camera_section"] = timetable.camera_section()
         return jsonify(data)
 
     @app.post("/api/recognition-events")
@@ -484,6 +587,7 @@ def create_app(
         if not isinstance(event, dict):
             return jsonify({"error": "JSON object required"}), 400
         try:
+            scheduler.check_due(force=True)
             result = database.record_recognition_event(event)
         except (TypeError, ValueError) as error:
             return jsonify({"error": str(error)}), 400
@@ -525,7 +629,7 @@ def create_app(
 
     @app.get("/health")
     def health():
-        return jsonify({"status": "ok", "camera": camera_status()})
+        return jsonify({"status": "ok", "camera": camera_status(), "timetable": scheduler.status()})
 
     return app
 
@@ -533,4 +637,9 @@ def create_app(
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    scheduler = app.extensions["timetable_scheduler"]
+    scheduler.start()
+    try:
+        app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    finally:
+        scheduler.stop()
