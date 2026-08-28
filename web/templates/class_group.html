@@ -20,7 +20,8 @@
     <div class="panel-heading"><div><h2>Weekly timetable</h2><p>Fill subjects like a college timetable. Blank cells are free periods.</p></div><span class="badge">{{ profile.grid.timezone }}</span></div>
     <input type="hidden" name="grid_json" id="grid-json">
     <div class="field-row"><label>College start time<input id="grid-start" type="time" value="{{ profile.grid.day_start }}" required></label><label>Periods per day<input id="period-count" type="number" min="1" max="10" value="{{ profile.grid.periods|length }}" required></label></div>
-    <h3>Period timings</h3><p class="muted">Break after adds a gap before the next period (for example, lunch). Repeat after 0 means one attendance check at the start of the period.</p>
+    <label>Lunch break — 1 hour<select id="lunch-after"></select><small>Choose the period after which lunch starts. It replaces that period's Break after with exactly 60 minutes.</small></label>
+    <h3>Period timings</h3><p class="muted">Break after adds a gap before the next period. Lunch is fixed at 60 minutes; other breaks remain editable. Repeat after 0 means one attendance check at the start of the period.</p>
     <div class="table-wrap"><table class="period-settings"><thead><tr><th>Period</th><th>Duration (min)</th><th>Break after (min)</th><th>Repeat after (min)</th><th>Open for (min)</th></tr></thead><tbody id="period-settings"></tbody></table></div>
     <h3>Subjects · Monday to Saturday</h3>
     <div class="table-wrap"><table class="section-week"><thead id="grid-head"></thead><tbody id="grid-body"></tbody></table></div>

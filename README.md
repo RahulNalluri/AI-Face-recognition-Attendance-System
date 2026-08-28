@@ -228,8 +228,14 @@ this step does not require new photographs or model retraining.
 
 You can enter department, semester, and academic year and fill a weekly subject
 grid on the same section form. Choose 1–10 periods per day and the college start
-time. Each period has its own duration and **Break after** (for lunch or other
-gaps). Fill Monday–Saturday subject cells; leave free periods blank.
+time. Each period has its own duration and **Break after** for short gaps.
+New grids include a **one-hour lunch break after Period 3**. Use **Lunch break —
+1 hour** to move it after another period. Lunch replaces that period's gap with
+exactly 60 minutes, appears as a separate non-teaching column, and shifts later
+periods automatically. It creates no attendance session. With the default 09:30
+start and 60-minute periods, lunch is 12:30–13:30 and Period 4 starts at 13:30.
+Existing saved grids keep their timings: choose the lunch position and save the
+section to apply it. Fill Monday–Saturday subject cells; leave free periods blank.
 
 For period attendance, **Repeat after = 0** means a single check at the start;
 use a positive interval for repeated checks during a long lab. **Open for** sets

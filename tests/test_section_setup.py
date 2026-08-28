@@ -55,6 +55,63 @@ class SectionSetupTest(unittest.TestCase):
         self.assertEqual(entries[0]["checkpoint_window_minutes"], 10)
         self.assertEqual(profile["grid"]["subjects"][0][:2], ["AI", "Networks"])
 
+    def test_one_hour_lunch_shifts_afternoon_without_extra_period(self):
+        grid = default_grid()
+        normalized = normalize_grid(grid)
+        self.assertEqual(normalized["lunch_after"], 3)
+        self.assertEqual(normalized["periods"][2]["break_after"], 60)
+        self.assertEqual(normalized["periods"][3]["start_time"], "13:30")
+        self.assertEqual(len(normalized["periods"]), 6)
+        self.assertEqual(normalize_grid(normalized), normalized)
+        # The backend enforces one hour even if a submitted gap was altered.
+        grid["periods"][2]["break_after"] = 15
+        self.assertEqual(normalize_grid(grid)["periods"][3]["start_time"], "13:30")
+
+    def test_lunch_creates_no_session_or_attendance(self):
+        grid = default_grid()
+        grid["enabled"] = True
+        grid["subjects"][0] = [f"Subject {i + 1}" for i in range(6)]
+        group = self.save(grid=grid)
+        self.table.select_camera_section(group)
+        self.assertEqual(len(self.table.entries()), 6)
+        self.table.run_due(self.start + timedelta(minutes=120))
+        lunch = self.start + timedelta(minutes=195)
+        self.assertEqual(self.table.run_due(lunch), [])
+        event = {"event": "recognition_and_liveness_passed", "identity": "student_one",
+                 "timestamp_utc": lunch.isoformat(), "similarity": .9, "liveness": "passed"}
+        self.assertEqual(self.db.record_recognition_event(event).outcome, "no_active_checkpoint")
+        afternoon = self.table.run_due(self.start + timedelta(minutes=240))[0]
+        self.assertEqual(self.db.session_detail(afternoon)["session"]["title"], "Subject 4")
+
+    def test_lunch_selection_validation_and_legacy_grids(self):
+        for value in [0, 7, "invalid", 2.5, True]:
+            grid = default_grid()
+            grid["lunch_after"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_grid(grid)
+        legacy = default_grid()
+        legacy.pop("lunch_after")
+        legacy["periods"][2]["break_after"] = 15
+        normalized = normalize_grid(legacy)
+        self.assertIsNone(normalized["lunch_after"])
+        self.assertEqual(normalized["periods"][3]["start_time"], "12:45")
+
+    def test_moving_lunch_preserves_generated_session_history(self):
+        grid = default_grid()
+        grid["enabled"] = True
+        grid["subjects"][0][3] = "Afternoon lab"
+        group = self.save(grid=grid)
+        self.table.select_camera_section(group)
+        old_id = self.table.run_due(self.start + timedelta(minutes=240))[0]
+        entry_id = self.table.entries()[0]["id"]
+        grid["periods"][2]["break_after"] = 0
+        grid["lunch_after"] = 4
+        self.save(group_id=group, grid=grid)
+        self.assertEqual(self.table.entries()[0]["id"], entry_id)
+        self.assertEqual(self.table.entries()[0]["start_time"], "12:30")
+        self.assertEqual(self.db.session_detail(old_id)["session"]["starts_at"],
+                         (self.start + timedelta(minutes=240)).isoformat())
+
     def test_blank_grid_and_paused_rosterless_section_are_allowed(self):
         group = self.save(grid=default_grid(), student_ids=[])
         self.assertEqual(self.table.entries(), [])
@@ -148,6 +205,7 @@ class SectionSetupTest(unittest.TestCase):
         old_entries = self.table.entries()
         grid = self.grid()
         grid["periods"] = grid["periods"][:1]
+        grid["lunch_after"] = 1
         grid["subjects"] = [row[:1] for row in grid["subjects"]]
         self.save(group_id=group, grid=grid)
         with self.db.session() as connection:

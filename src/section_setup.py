@@ -7,7 +7,8 @@ from timetable import Timetable, timetable_timezone
 
 def default_grid(timezone_name="Asia/Kolkata"):
     return {"day_start": "09:30", "timezone": timezone_name, "enabled": False,
-            "periods": [{"duration": 60, "break_after": 0, "repeat": 0, "window": 10} for _ in range(6)],
+            "lunch_after": 3,
+            "periods": [{"duration": 60, "break_after": 60 if i == 2 else 0, "repeat": 0, "window": 10} for i in range(6)],
             "subjects": [[""] * 6 for _ in range(6)]}
 
 
@@ -21,14 +22,25 @@ def normalize_grid(raw):
         not isinstance(row, list) or len(row) != len(periods) for row in subjects
     ):
         raise ValueError("Provide a Monday–Saturday subject grid matching the period count")
+    # Old saved grids retain their timings until lunch is explicitly selected.
+    lunch_after = raw.get("lunch_after")
+    if lunch_after is not None:
+        try:
+            lunch_after = int(str(lunch_after))
+        except (TypeError, ValueError):
+            raise ValueError("Choose a valid period for lunch") from None
+        if not 1 <= lunch_after <= len(periods):
+            raise ValueError("Lunch must follow an existing period")
     try:
         parsed = datetime.strptime(raw.get("day_start", ""), "%H:%M")
         minute = parsed.hour * 60 + parsed.minute
         clean_periods = []
-        for period in periods:
+        for index, period in enumerate(periods):
             duration, gap, repeat, window = (int(str(period[field])) for field in ("duration", "break_after", "repeat", "window"))
             if not 1 <= duration <= 1440 or not 0 <= gap <= 1440:
                 raise ValueError("Each period needs a positive duration and a nonnegative break")
+            if lunch_after == index + 1:
+                gap = 60
             if not 0 <= repeat <= duration or not 1 <= window <= (repeat or duration):
                 raise ValueError("Attendance window must fit within Repeat after (or the period for a single check)")
             if minute + duration > 1440:
@@ -36,6 +48,8 @@ def normalize_grid(raw):
             clean_periods.append({"duration": duration, "break_after": gap, "repeat": repeat,
                                   "window": window, "start_time": f"{minute // 60:02d}:{minute % 60:02d}"})
             minute += duration + gap
+            if lunch_after == index + 1 and minute > 1440:
+                raise ValueError("The one-hour lunch break must finish by midnight")
     except (KeyError, TypeError, OverflowError):
         raise ValueError("Provide valid numbers for every period") from None
     zone = str(raw.get("timezone", "Asia/Kolkata"))
@@ -48,7 +62,8 @@ def normalize_grid(raw):
             raise ValueError("Each subject must be text with at most 100 characters")
         clean_subjects.append([subject.strip() for subject in row])
     return {"day_start": parsed.strftime("%H:%M"), "timezone": zone,
-            "enabled": raw.get("enabled", False), "periods": clean_periods, "subjects": clean_subjects}
+            "enabled": raw.get("enabled", False), "lunch_after": lunch_after,
+            "periods": clean_periods, "subjects": clean_subjects}
 
 
 class SectionSetup:
