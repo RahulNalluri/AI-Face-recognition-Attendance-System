@@ -11,6 +11,7 @@
   <article><strong>{{ detail.completed_checkpoint_count }}</strong><span>Completed checkpoints</span></article>
   <article><strong>{{ '—' if detail.attendance_percentage is none else '%.1f%%'|format(detail.attendance_percentage) }}</strong><span>Overall attendance</span></article>
 </section>
+<p class="muted">Class: {{ detail.session.group_name_snapshot or 'All enrolled identities' }}{% if detail.session.group_id %} · Roster and class name saved when this session started.{% endif %}</p>
 <section class="panel">
   <div class="panel-heading"><div><h2>Checkpoint summary</h2><p>Attendance windows and captured records.</p></div><span class="badge {{ detail.session.status }}">{{ detail.session.status }}</span></div>
   <div class="checkpoint-cards">{% for item in detail.checkpoints %}<article><span>Checkpoint {{ item.checkpoint_number }}</span><strong>{{ item.opens_at|local_datetime }}</strong><small>Closes {{ item.closes_at|local_datetime }}</small><b>{{ item.attendance_count }}/{{ detail.roster|length }} present</b></article>{% endfor %}</div>

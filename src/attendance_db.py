@@ -87,6 +87,22 @@ CREATE INDEX IF NOT EXISTS idx_monitor_checkpoints_time ON monitor_checkpoints(o
 CREATE INDEX IF NOT EXISTS idx_monitor_log_time ON monitor_recognition_log(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_session_roster_student ON session_roster(student_id);
 CREATE INDEX IF NOT EXISTS idx_attendance_audit_session ON attendance_audit(session_id, changed_at);
+CREATE TABLE IF NOT EXISTS class_groups (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+ description TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS class_group_members (
+ group_id INTEGER NOT NULL REFERENCES class_groups(id),
+ student_id INTEGER NOT NULL REFERENCES students(id),
+ PRIMARY KEY(group_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS session_class_groups (
+ session_id INTEGER PRIMARY KEY REFERENCES monitor_sessions(id),
+ group_id INTEGER NOT NULL REFERENCES class_groups(id),
+ group_name_snapshot TEXT NOT NULL
+);
 """
 
 
@@ -146,6 +162,69 @@ class AttendanceDatabase:
         with self.session() as connection:
             return connection.execute("SELECT * FROM students WHERE active=1 ORDER BY display_name").fetchall()
 
+    def class_groups(self) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT g.*,COUNT(s.id) member_count FROM class_groups g
+                LEFT JOIN class_group_members m ON m.group_id=g.id
+                LEFT JOIN students s ON s.id=m.student_id AND s.active=1
+                GROUP BY g.id ORDER BY g.name COLLATE NOCASE"""
+            ).fetchall()]
+
+    def class_group(self, group_id: int) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute("SELECT * FROM class_groups WHERE id=?", (group_id,)).fetchone()
+            if row is None:
+                return None
+            group = dict(row)
+            group["student_ids"] = [row["student_id"] for row in connection.execute(
+                "SELECT student_id FROM class_group_members WHERE group_id=?", (group_id,)
+            ).fetchall()]
+            return group
+
+    def save_class_group(
+        self, name: str, description: str, student_ids: list[int], group_id: int | None = None,
+    ) -> int:
+        name, description = name.strip(), description.strip()
+        if not name or len(name) > 80:
+            raise ValueError("Class name must contain 1 to 80 characters")
+        if len(description) > 300:
+            raise ValueError("Class description must be 300 characters or fewer")
+        selected = sorted(set(int(value) for value in student_ids))
+        now = datetime_text(utc_now())
+        with self.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if group_id is not None and not connection.execute(
+                "SELECT id FROM class_groups WHERE id=?", (group_id,)
+            ).fetchone():
+                raise ValueError("Class group does not exist")
+            duplicate = connection.execute(
+                "SELECT id FROM class_groups WHERE name=? AND id!=?", (name, group_id or -1)
+            ).fetchone()
+            if duplicate:
+                raise ValueError("A class group with this name already exists")
+            available = {row["id"] for row in connection.execute("SELECT id FROM students WHERE active=1")}
+            if not set(selected).issubset(available):
+                raise ValueError("Choose only existing active students")
+            if group_id is None:
+                cursor = connection.execute(
+                    "INSERT INTO class_groups(name,description,created_at,updated_at) VALUES (?,?,?,?)",
+                    (name, description, now, now),
+                )
+                group_id = int(cursor.lastrowid)
+            else:
+                connection.execute(
+                    "UPDATE class_groups SET name=?,description=?,updated_at=? WHERE id=?",
+                    (name, description, now, group_id),
+                )
+            # Only the reusable class roster changes; session snapshots are never edited here.
+            connection.execute("DELETE FROM class_group_members WHERE group_id=?", (group_id,))
+            connection.executemany(
+                "INSERT INTO class_group_members(group_id,student_id) VALUES (?,?)",
+                [(group_id, student_id) for student_id in selected],
+            )
+        return group_id
+
     def sync_identities(self, labels: list[str]) -> dict[str, int]:
         normalized = []
         seen = set()
@@ -176,6 +255,8 @@ class AttendanceDatabase:
                 """SELECT s.id FROM monitor_sessions s
                 WHERE NOT EXISTS (
                     SELECT 1 FROM session_roster r WHERE r.session_id=s.id
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM session_class_groups g WHERE g.session_id=s.id
                 )"""
             ).fetchall()
             for row in sessions:
@@ -190,6 +271,7 @@ class AttendanceDatabase:
     def start_session(
         self, title: str, starts_at: datetime, duration_minutes: int = 130,
         checkpoint_interval_minutes: int = 65, checkpoint_window_minutes: int = 10,
+        group_id: int | None = None,
     ) -> int:
         if not title.strip():
             raise ValueError("Session title is required")
@@ -200,6 +282,18 @@ class AttendanceDatabase:
         now = utc_now()
         status = "active" if start <= now < end else "scheduled"
         with self.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            group = None
+            if group_id is not None:
+                group = connection.execute("SELECT * FROM class_groups WHERE id=?", (group_id,)).fetchone()
+                if group is None:
+                    raise ValueError("Choose an existing class group")
+                members = connection.execute(
+                    """SELECT s.* FROM students s JOIN class_group_members m ON m.student_id=s.id
+                    WHERE m.group_id=? AND s.active=1 ORDER BY s.id""", (group_id,),
+                ).fetchall()
+                if not members:
+                    raise ValueError("Add at least one active student to this class before starting a session")
             connection.execute("UPDATE monitor_sessions SET status='closed' WHERE status='active'")
             cursor = connection.execute(
                 """INSERT INTO monitor_sessions(
@@ -219,12 +313,25 @@ class AttendanceDatabase:
                 )
                 checkpoint_time += timedelta(minutes=checkpoint_interval_minutes)
                 number += 1
-            connection.execute(
-                """INSERT INTO session_roster(
-                session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
-                ) SELECT ?,id,identity_label,display_name,? FROM students WHERE active=1""",
-                (session_id, datetime_text(now)),
-            )
+            if group is not None:
+                connection.execute(
+                    "INSERT INTO session_class_groups(session_id,group_id,group_name_snapshot) VALUES (?,?,?)",
+                    (session_id, group_id, group["name"]),
+                )
+                connection.executemany(
+                    """INSERT INTO session_roster(
+                    session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
+                    ) VALUES (?,?,?,?,?)""",
+                    [(session_id, row["id"], row["identity_label"], row["display_name"], datetime_text(now))
+                     for row in members],
+                )
+            else:
+                connection.execute(
+                    """INSERT INTO session_roster(
+                    session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
+                    ) SELECT ?,id,identity_label,display_name,? FROM students WHERE active=1""",
+                    (session_id, datetime_text(now)),
+                )
             return session_id
 
     def refresh_statuses(self, now: datetime | None = None) -> None:
@@ -352,7 +459,9 @@ class AttendanceDatabase:
                 ).fetchone()
             student_id = int(student["id"])
             checkpoint = connection.execute(
-                """SELECT c.id,c.session_id FROM monitor_checkpoints c JOIN monitor_sessions s ON s.id=c.session_id
+                """SELECT c.id,c.session_id,g.group_id FROM monitor_checkpoints c
+                JOIN monitor_sessions s ON s.id=c.session_id
+                LEFT JOIN session_class_groups g ON g.session_id=s.id
                 WHERE s.status='active' AND c.opens_at<=? AND c.closes_at>=?
                 ORDER BY c.opens_at DESC LIMIT 1""", (occurred_text, occurred_text),
             ).fetchone()
@@ -364,6 +473,16 @@ class AttendanceDatabase:
                 log(connection, result)
                 return result
             checkpoint_id = int(checkpoint["id"])
+            if checkpoint["group_id"] is not None and not connection.execute(
+                "SELECT 1 FROM session_roster WHERE session_id=? AND student_id=?",
+                (checkpoint["session_id"], student_id),
+            ).fetchone():
+                result = AttendanceResult(
+                    "not_in_roster", "Recognized, but this student is not in the session's class roster",
+                    checkpoint_id=checkpoint_id, student_id=student_id,
+                )
+                log(connection, result)
+                return result
             connection.execute(
                 """INSERT OR IGNORE INTO session_roster(
                 session_id,student_id,identity_label_snapshot,display_name_snapshot,added_at
@@ -401,7 +520,7 @@ class AttendanceDatabase:
         current = datetime_text(utc_now())
         with self.session() as connection:
             rows = connection.execute(
-                """SELECT s.*,
+                """SELECT s.*,g.group_id,g.group_name_snapshot,
                 (SELECT COUNT(*) FROM session_roster r WHERE r.session_id=s.id) roster_count,
                 (SELECT COUNT(*) FROM monitor_checkpoints c WHERE c.session_id=s.id) checkpoint_count,
                 (SELECT COUNT(*) FROM monitor_checkpoints c
@@ -421,7 +540,8 @@ class AttendanceDatabase:
                                 WHERE a.checkpoint_id=c.id AND a.student_id=r.student_id)
                         )
                     )) completed_attendance_count
-                FROM monitor_sessions s ORDER BY s.starts_at DESC,s.id DESC""",
+                FROM monitor_sessions s LEFT JOIN session_class_groups g ON g.session_id=s.id
+                ORDER BY s.starts_at DESC,s.id DESC""",
                 (current, current),
             ).fetchall()
         history = []
@@ -441,7 +561,8 @@ class AttendanceDatabase:
         now_text = datetime_text(now)
         with self.session() as connection:
             session_row = connection.execute(
-                "SELECT * FROM monitor_sessions WHERE id=?", (session_id,)
+                """SELECT s.*,g.group_id,g.group_name_snapshot FROM monitor_sessions s
+                LEFT JOIN session_class_groups g ON g.session_id=s.id WHERE s.id=?""", (session_id,)
             ).fetchone()
             if not session_row:
                 return None
@@ -535,7 +656,9 @@ class AttendanceDatabase:
         self.refresh_statuses()
         with self.session() as connection:
             current = connection.execute(
-                "SELECT * FROM monitor_sessions ORDER BY created_at DESC LIMIT 1"
+                """SELECT s.*,g.group_id,g.group_name_snapshot FROM monitor_sessions s
+                LEFT JOIN session_class_groups g ON g.session_id=s.id
+                ORDER BY s.created_at DESC,s.id DESC LIMIT 1"""
             ).fetchone()
             checkpoints: list[sqlite3.Row] = []
             attendance: list[sqlite3.Row] = []

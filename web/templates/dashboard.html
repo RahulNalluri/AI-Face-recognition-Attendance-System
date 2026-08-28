@@ -22,6 +22,7 @@
       <div class="panel-heading"><div><h2>Current session</h2><p>Hourly checkpoint schedule</p></div></div>
       {% if data.session %}
         <div class="session-title"><strong id="session-title">{{ data.session.title }}</strong><span id="session-status" class="badge {{ data.session.status }}">{{ data.session.status }}</span></div>
+        <p class="muted">Class: {{ data.session.group_name_snapshot or 'All enrolled identities' }}</p>
         <p class="muted">{{ data.session.starts_at|local_datetime }} – {{ data.session.ends_at|local_datetime }}</p>
         <div id="checkpoints" class="checkpoint-list">{% for item in data.checkpoints %}<div><span>Check {{ item.checkpoint_number }}</span><strong>{{ item.opens_at|local_datetime }}</strong><small>{{ item.attendance_count }} marked</small><span class="badge">scheduled</span></div>{% endfor %}</div>
         {% if data.session.status != 'closed' %}<form method="post" action="{{ url_for('close_session', session_id=data.session.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger full" type="submit">Close session</button></form>{% endif %}
@@ -39,8 +40,9 @@
 </section>
 
 <div class="session-form-wrap">
-  <form class="panel form-card session-form" method="post" action="{{ url_for('start_session') }}">
+  <form id="session-form" class="panel form-card session-form" method="post" action="{{ url_for('start_session') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><h2>Start attendance session</h2>
+    <label>Class roster<select name="group_id"><option value="">All enrolled identities (no class group)</option>{% for group in groups %}<option value="{{ group.id }}" {% if group.id == selected_group_id %}selected{% endif %}>{{ group.name }} — {{ group.member_count }} students</option>{% endfor %}</select><small>Class sessions only accept students in their saved roster. <a href="{{ url_for('class_groups_page') }}">Manage class groups</a></small></label>
     <label>Session or class name<input id="session-name" name="title" placeholder="Artificial Intelligence – Period 1" required></label>
     <label>Starts at<input id="starts-at" type="datetime-local" name="starts_at" required></label>
     <div class="field-row"><label>Duration<input id="duration-minutes" type="number" name="duration_minutes" min="1" value="130" required><small>minutes</small></label><label>Repeat after<input id="checkpoint-interval" type="number" name="checkpoint_interval_minutes" min="1" value="65" required><small>minutes</small></label><label>Open for<input id="checkpoint-window" type="number" name="checkpoint_window_minutes" min="1" value="10" required><small>minutes</small></label></div>
@@ -70,7 +72,50 @@ function updateStream(cameraState){const active=['starting','running','recoverin
 function localTime(value){return value?new Date(value).toLocaleString([], {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';}
 function cell(text,tag='td'){const node=document.createElement(tag);node.textContent=text;return node;}
 function renderCheckpoints(items){const list=document.getElementById('checkpoints');if(!list)return;list.replaceChildren();const now=Date.now();for(const item of items){const opens=new Date(item.opens_at).getTime(),closes=new Date(item.closes_at).getTime();const status=now<opens?'upcoming':(now<=closes?'open':'closed');const row=document.createElement('div'),label=document.createElement('span'),time=document.createElement('strong'),count=document.createElement('small'),badge=document.createElement('span');label.textContent='Check '+item.checkpoint_number;time.textContent=localTime(item.opens_at);count.textContent=item.attendance_count+' marked';badge.textContent=status;badge.className='badge '+status;row.append(label,time,count,badge);list.append(row);}}
-async function refreshLogs(){try{const response=await fetch('{{ url_for("monitor_api") }}',{cache:'no-store'});const data=await response.json();document.getElementById('student-count').textContent=data.students.length;document.getElementById('attendance-count').textContent=data.attendance.length;document.getElementById('log-count').textContent=data.logs.length;if(data.session){document.getElementById('session-title').textContent=data.session.title;const sessionStatus=document.getElementById('session-status');sessionStatus.textContent=data.session.status;sessionStatus.className='badge '+data.session.status;renderCheckpoints(data.checkpoints);}state.textContent=data.camera.message;cameraBadge.textContent=data.camera.state;cameraBadge.className='badge '+data.camera.state;const cameraActive=['starting','running','recovering'].includes(data.camera.state);startForm.hidden=cameraActive;stopForm.hidden=!cameraActive;cameraError.hidden=data.camera.state!=='error';cameraError.textContent=(data.camera.recent_output||[]).join('\n');cameraSource.textContent=data.camera.source??'—';previewHealth.textContent=data.camera.preview?.fresh?'Live':cameraActive?'Waiting':'Off';recoveryCount.textContent=data.camera.reconnect_count||0;updateStream(data.camera.state);const body=document.getElementById('log-body');body.replaceChildren();if(!data.logs.length){const row=document.createElement('tr'),empty=cell('No recognition events yet.');empty.colSpan=6;empty.className='empty';row.append(empty);body.append(row);}for(const item of data.logs){const row=document.createElement('tr');const person=cell('');const strong=document.createElement('strong');strong.textContent=item.display_name||item.identity_label||'Unknown';const small=document.createElement('small');small.textContent=item.identity_label||'—';person.append(strong,small);const registration=item.registration_number&&item.registration_number.startsWith('AUTO-')?'—':(item.registration_number||'—');row.append(person,cell(registration),cell(localTime(item.occurred_at)),cell(Number(item.similarity||0).toFixed(2)),cell(item.liveness_passed?'Passed':'Blocked'),cell(item.message));body.append(row);}}catch(error){state.textContent='Dashboard connection interrupted';}}
+const renderedSessionId={{ (data.session.id if data.session else none)|tojson }};
+async function refreshLogs(){
+  try{
+    const response=await fetch('{{ url_for("monitor_api") }}',{cache:'no-store'});
+    const data=await response.json();
+    // Another tab may have started a different class: refresh the whole session card.
+    if((data.session?.id??null)!==renderedSessionId){window.location.reload();return;}
+    document.getElementById('student-count').textContent=data.students.length;
+    document.getElementById('attendance-count').textContent=data.attendance.length;
+    document.getElementById('log-count').textContent=data.logs.length;
+    if(data.session){
+      document.getElementById('session-title').textContent=data.session.title;
+      const sessionStatus=document.getElementById('session-status');
+      sessionStatus.textContent=data.session.status;
+      sessionStatus.className='badge '+data.session.status;
+      renderCheckpoints(data.checkpoints);
+    }
+    state.textContent=data.camera.message;
+    cameraBadge.textContent=data.camera.state;
+    cameraBadge.className='badge '+data.camera.state;
+    const cameraActive=['starting','running','recovering'].includes(data.camera.state);
+    startForm.hidden=cameraActive;stopForm.hidden=!cameraActive;
+    cameraError.hidden=data.camera.state!=='error';
+    cameraError.textContent=(data.camera.recent_output||[]).join('\n');
+    cameraSource.textContent=data.camera.source??'—';
+    previewHealth.textContent=data.camera.preview?.fresh?'Live':cameraActive?'Waiting':'Off';
+    recoveryCount.textContent=data.camera.reconnect_count||0;
+    updateStream(data.camera.state);
+    const body=document.getElementById('log-body');body.replaceChildren();
+    if(!data.logs.length){
+      const row=document.createElement('tr'),empty=cell('No recognition events yet.');
+      empty.colSpan=6;empty.className='empty';row.append(empty);body.append(row);
+    }
+    for(const item of data.logs){
+      const row=document.createElement('tr'),person=cell(''),strong=document.createElement('strong');
+      strong.textContent=item.display_name||item.identity_label||'Unknown';
+      const small=document.createElement('small');small.textContent=item.identity_label||'—';
+      person.append(strong,small);
+      const registration=item.registration_number&&item.registration_number.startsWith('AUTO-')?'—':(item.registration_number||'—');
+      row.append(person,cell(registration),cell(localTime(item.occurred_at)),cell(Number(item.similarity||0).toFixed(2)),cell(item.liveness_passed?'Passed':'Blocked'),cell(item.message));
+      body.append(row);
+    }
+  }catch(error){state.textContent='Dashboard connection interrupted';}
+}
 setInterval(refreshLogs,1000);refreshLogs();
 </script>
 {% endblock %}

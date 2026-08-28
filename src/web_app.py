@@ -304,8 +304,45 @@ def create_app(
     @app.get("/")
     def dashboard():
         return render_template(
-            "dashboard.html", data=database.monitor_data(), camera=camera_status()
+            "dashboard.html", data=database.monitor_data(), camera=camera_status(),
+            groups=database.class_groups(), selected_group_id=request.args.get("group_id", type=int),
         )
+
+    @app.get("/classes")
+    def class_groups_page():
+        return render_template("classes.html", groups=database.class_groups())
+
+    def class_editor(group_id: int | None = None):
+        group = database.class_group(group_id) if group_id is not None else {
+            "id": None, "name": "", "description": "", "student_ids": [],
+        }
+        if group is None:
+            abort(404)
+        status_code = 200
+        if request.method == "POST":
+            try:
+                selected = [int(value) for value in request.form.getlist("student_ids")]
+                group.update({
+                    "name": request.form.get("name", ""),
+                    "description": request.form.get("description", ""), "student_ids": selected,
+                })
+                saved_id = database.save_class_group(
+                    group["name"], group["description"], selected, group_id,
+                )
+                flash("Class roster saved. Existing session rosters are unchanged.", "success")
+                return redirect(url_for("edit_class_group", group_id=saved_id))
+            except (ValueError, sqlite3.IntegrityError) as error:
+                flash(str(error), "error")
+                status_code = 400
+        return render_template("class_group.html", group=group, students=database.students()), status_code
+
+    @app.route("/classes/new", methods=["GET", "POST"])
+    def new_class_group():
+        return class_editor()
+
+    @app.route("/classes/<int:group_id>", methods=["GET", "POST"])
+    def edit_class_group(group_id: int):
+        return class_editor(group_id)
 
     @app.get("/sessions")
     def session_history():
@@ -362,6 +399,7 @@ def create_app(
                 int(request.form["duration_minutes"]),
                 int(request.form["checkpoint_interval_minutes"]),
                 int(request.form["checkpoint_window_minutes"]),
+                group_id=int(request.form["group_id"]) if request.form.get("group_id") else None,
             )
             flash("Attendance session and checkpoints started.", "success")
         except (KeyError, ValueError, sqlite3.IntegrityError) as error:
@@ -406,7 +444,7 @@ def create_app(
         writer.writerow(
             ["Identity", "Name"]
             + [f"Checkpoint {item['checkpoint_number']}" for item in detail["checkpoints"]]
-            + ["Attended", "Completed checkpoints", "Attendance percentage"]
+            + ["Attended", "Completed checkpoints", "Attendance percentage", "Class group"]
         )
         for student in detail["roster"]:
             writer.writerow(
@@ -418,6 +456,10 @@ def create_app(
                 + [
                     student["attended_count"], detail["completed_checkpoint_count"],
                     "" if student["attendance_percentage"] is None else student["attendance_percentage"],
+                    # Prevent a class name from being interpreted as a spreadsheet formula.
+                    "'" + detail["session"]["group_name_snapshot"]
+                    if (detail["session"]["group_name_snapshot"] or "").lstrip().startswith(("=", "+", "-", "@"))
+                    else detail["session"]["group_name_snapshot"] or "All enrolled identities",
                 ]
             )
         safe_title = "".join(

@@ -219,6 +219,31 @@ saved roster, checkpoint windows, present/absent/open/upcoming status, per-perso
 and overall percentages, and a checkpoint-wise CSV export. A person becomes
 absent only after that checkpoint window closes.
 
+### Class groups and student rosters
+
+Open **Class groups → Create class group**, enter a name such as `CSE-A`, and
+select students from the existing enrolled identities. Search by name, identity,
+or registration number to find students. A student may belong to multiple groups;
+this step does not require new photographs or model retraining.
+
+Save the roster, then choose **Use class for a session** (or select its name in
+the dashboard's **Class roster** field). Set the session title and checkpoint
+timings as usual. An empty class can be saved but cannot start a session.
+
+Class sessions save a snapshot of the class name and selected students. Later
+class edits apply only to future sessions, preserving existing attendance reports.
+Recognition and liveness still have to pass: an otherwise recognized student
+outside the saved roster is logged as `not_in_roster` and is not marked present.
+Reports and percentages count only the session's roster; history and CSV exports
+include the saved class name.
+
+**All enrolled identities (no class group)** retains the original test workflow:
+it starts with every active identity and can add newly recognized identities to
+that session. Choose a named class when membership must be enforced. Group data
+is stored in the private local database, not in Git. Existing databases are
+upgraded automatically without removing attendance records. This remains a
+login-free local operator interface, not a multi-user access-control system.
+
 ### 8. Manage completed attendance
 
 Open a session report and use **Search roster** to find a person by name, model
@@ -329,7 +354,7 @@ real-world accuracy.
 ## Planned enhancements
 
 - Passive anti-spoofing in addition to the current active liveness challenge.
-- Reusable timetables and named class groups for automatic session creation.
+- Reusable timetables for automatic class-session creation.
 - Attendance percentages, shortage alerts, and downloadable reports.
 - PostgreSQL, HTTPS, and deployment hardening for multi-device operation.
 - Consent, encryption, biometric-data retention, and deletion controls.

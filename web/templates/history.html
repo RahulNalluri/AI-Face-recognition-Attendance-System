@@ -9,7 +9,7 @@
   <div class="table-wrap"><table>
     <thead><tr><th>Session</th><th>Scheduled time</th><th>Status</th><th>Roster</th><th>Checkpoints</th><th>Records</th><th>Attendance</th><th></th></tr></thead>
     <tbody>{% for item in history %}<tr>
-      <td><strong>{{ item.title }}</strong><small>Session #{{ item.id }}</small></td>
+      <td><strong>{{ item.title }}</strong><small>{{ item.group_name_snapshot or 'All enrolled identities' }} · Session #{{ item.id }}</small></td>
       <td>{{ item.starts_at|local_datetime }}<small>to {{ item.ends_at|local_datetime }}</small></td>
       <td><span class="badge {{ item.status }}">{{ item.status }}</span></td>
       <td>{{ item.roster_count }}</td>

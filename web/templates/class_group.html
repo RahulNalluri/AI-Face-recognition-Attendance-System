@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name or 'Create Class Group' }} · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Student roster</p><h1>{{ group.name or 'Create class group' }}</h1><p>Select the students who should be counted in this class.</p></div>
+  <a class="button ghost" href="{{ url_for('class_groups_page') }}">All class groups</a>
+</div>
+<form class="panel form-card" method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Class name<input name="name" maxlength="80" placeholder="CSE-A · Year 4" value="{{ group.name }}" required></label>
+  <label>Description<input name="description" maxlength="300" placeholder="Department, semester, or section (optional)" value="{{ group.description }}"></label>
+  <div class="panel-heading"><div><h2>Enrolled students</h2><p><span id="selected-count">{{ group.student_ids|length }}</span> selected. A student can belong to more than one class.</p></div><label>Search students<input id="member-search" type="search" placeholder="Name, identity, or registration"></label></div>
+  <div class="member-grid">
+    {% for student in students %}<label class="member-option" data-search="{{ (student.display_name ~ ' ' ~ student.identity_label ~ ' ' ~ student.registration_number)|lower }}"><input type="checkbox" name="student_ids" value="{{ student.id }}" {% if student.id in group.student_ids %}checked{% endif %}><span><strong>{{ student.display_name }}</strong><small>{{ student.identity_label }}{% if not student.registration_number.startswith('AUTO-') %} · {{ student.registration_number }}{% endif %}</small></span></label>{% else %}<p class="muted">No enrolled identities available. Train or load your local model identities before adding students.</p>{% endfor %}
+  </div>
+  <p id="no-member-matches" class="muted" hidden>No students match this search.</p>
+  <p class="muted">Saving changes affects future sessions only. An empty class can be saved, but cannot start an attendance session.</p>
+  <div class="page-actions"><button class="button primary" type="submit">Save class roster</button>{% if group.id %}<a class="button ghost" href="{{ url_for('dashboard', group_id=group.id, _anchor='session-form') }}">Use class for a session</a>{% endif %}</div>
+</form>
+{% endblock %}
+{% block scripts %}<script>
+const memberOptions=[...document.querySelectorAll('.member-option')];
+document.getElementById('member-search').addEventListener('input',event=>{const query=event.target.value.trim().toLowerCase();for(const option of memberOptions)option.hidden=!option.dataset.search.includes(query);document.getElementById('no-member-matches').hidden=memberOptions.some(option=>!option.hidden);});
+for(const option of memberOptions)option.querySelector('input').addEventListener('change',()=>{document.getElementById('selected-count').textContent=document.querySelectorAll('input[name="student_ids"]:checked').length;});
+</script>{% endblock %}
