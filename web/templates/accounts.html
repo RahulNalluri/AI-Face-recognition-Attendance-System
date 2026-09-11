@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Account management · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Administrator only</p><h1>Account management</h1><p>Create login access, connect students to recognition identities, and recover accounts.</p></div>
+</div>
+
+<section class="forms-grid account-create-grid">
+  <form class="panel form-card" method="post" action="{{ url_for('create_student_account') }}" autocomplete="off">
+    <div><p class="eyebrow">Student access</p><h2>Create student account</h2></div>
+    {% if not data.groups %}<div class="flash error">Create a <a href="{{ url_for('new_class_group') }}">section and roster</a> before registering student access.</div>{% endif %}
+    <label>Recognition identity
+      <select name="student_id" required><option value="">Choose an unlinked identity</option>{% for student in data.students if not student.account_id and student.active %}<option value="{{ student.student_id }}">{{ student.display_name }} — {{ student.identity_label }}</option>{% endfor %}</select>
+      <small>The account will display attendance only for this exact enrolled identity.</small>
+    </label>
+    <label>Section
+      <select name="group_id" required><option value="">Choose the student's section</option>{% for group in data.groups %}<option value="{{ group.id }}">{{ group.name }} — {{ group.member_count }} students</option>{% endfor %}</select>
+      <small>The recognition identity is added to this section roster immediately.</small>
+    </label>
+    <label>Username<input name="username" maxlength="80" autocomplete="off" required></label>
+    <div class="field-row two-fields"><label>Temporary password<input type="password" name="temporary_password" minlength="8" autocomplete="new-password" required></label><label>Confirm password<input type="password" name="confirm_password" minlength="8" autocomplete="new-password" required></label></div>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button primary" type="submit">Create and link student</button>
+  </form>
+  <form class="panel form-card" method="post" action="{{ url_for('create_faculty_account') }}" autocomplete="off">
+    <div><p class="eyebrow">Staff access</p><h2>Create faculty account</h2></div>
+    <label>Faculty name<input name="display_name" maxlength="100" required></label>
+    <label>Username<input name="username" maxlength="80" autocomplete="off" required></label>
+    <div class="field-row two-fields"><label>Temporary password<input type="password" name="temporary_password" minlength="8" autocomplete="new-password" required></label><label>Confirm password<input type="password" name="confirm_password" minlength="8" autocomplete="new-password" required></label></div>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button primary" type="submit">Create faculty account</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Faculty subject and section assignments</h2><p>Assignments organize the faculty dashboard; they do not modify saved attendance.</p></div></div>
+  <form class="assignment-form" method="post" action="{{ url_for('create_faculty_assignment') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Faculty<select name="staff_account_id" required><option value="">Choose faculty</option>{% for staff in data.staff if staff.role == 'faculty' and staff.enabled %}<option value="{{ staff.account_id }}">{{ staff.display_name }}</option>{% endfor %}</select></label>
+    <label>Section<select name="group_id" required><option value="">Choose section</option>{% for group in data.groups %}<option value="{{ group.id }}">{{ group.name }}</option>{% endfor %}</select></label>
+    <label>Subject<input name="subject_title" maxlength="100" placeholder="Artificial Intelligence" required></label>
+    <button class="button primary" type="submit">Assign subject</button>
+  </form>
+  <div class="table-wrap"><table><thead><tr><th>Faculty</th><th>Section</th><th>Subject</th><th></th></tr></thead><tbody>{% for item in data.assignments %}<tr><td>{{ item.faculty_name }}<small>{{ item.faculty_username }}</small></td><td>{{ item.group_name }}</td><td><strong>{{ item.subject_title }}</strong></td><td><form method="post" action="{{ url_for('delete_faculty_assignment', assignment_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Remove</button></form></td></tr>{% else %}<tr><td colspan="4" class="empty">No faculty assignments yet.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Student identities and accounts</h2><p>Face-recognition identities remain available even when login access is disabled.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Student identity</th><th>Registration</th><th>Login</th><th>Status</th><th>Last login</th><th>Actions</th></tr></thead><tbody>
+  {% for student in data.students %}<tr><td><strong>{{ student.display_name }}</strong><small>{{ student.identity_label }}</small></td><td>{{ student.registration_number }}</td><td>{{ student.username or 'Not linked' }}</td><td>{% if student.account_id %}<span class="badge {{ 'active' if student.enabled else 'rejected' }}">{{ 'Enabled' if student.enabled else 'Disabled' }}</span>{% if student.password_change_required %}<small class="manual-note">Password change required</small>{% endif %}{% else %}<span class="badge">No login</span>{% endif %}</td><td>{{ student.last_login_at|local_datetime if student.last_login_at else 'Never' }}</td><td>{% if student.account_id %}<div class="account-actions"><form method="post" action="{{ url_for('toggle_managed_account', account_type='student', account_id=student.account_id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 0 if student.enabled else 1 }}"><button class="button {{ 'danger' if student.enabled else '' }}" type="submit">{{ 'Disable' if student.enabled else 'Enable' }}</button></form><details><summary>Reset password</summary><form class="reset-form" method="post" action="{{ url_for('reset_managed_password', account_type='student', account_id=student.account_id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="password" name="temporary_password" minlength="8" placeholder="Temporary password" autocomplete="new-password" required><input type="password" name="confirm_password" minlength="8" placeholder="Confirm password" autocomplete="new-password" required><button class="button primary" type="submit">Reset</button></form></details></div>{% else %}Create above{% endif %}</td></tr>
+  {% else %}<tr><td colspan="6" class="empty">No recognition identities are enrolled.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Staff accounts</h2><p>Faculty has attendance-operation access. Account management remains admin-only.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th>Actions</th></tr></thead><tbody>
+  {% for staff in data.staff %}<tr><td><strong>{{ staff.display_name }}</strong></td><td>{{ staff.username }}</td><td><span class="role-badge">{{ staff.role }}</span></td><td><span class="badge {{ 'active' if staff.enabled else 'rejected' }}">{{ 'Enabled' if staff.enabled else 'Disabled' }}</span>{% if staff.password_change_required %}<small class="manual-note">Password change required</small>{% endif %}</td><td>{{ staff.last_login_at|local_datetime if staff.last_login_at else 'Never' }}</td><td>{% if staff.role == 'faculty' %}<div class="account-actions"><form method="post" action="{{ url_for('toggle_managed_account', account_type='faculty', account_id=staff.account_id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 0 if staff.enabled else 1 }}"><button class="button {{ 'danger' if staff.enabled else '' }}" type="submit">{{ 'Disable' if staff.enabled else 'Enable' }}</button></form><details><summary>Reset password</summary><form class="reset-form" method="post" action="{{ url_for('reset_managed_password', account_type='faculty', account_id=staff.account_id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="password" name="temporary_password" minlength="8" placeholder="Temporary password" autocomplete="new-password" required><input type="password" name="confirm_password" minlength="8" placeholder="Confirm password" autocomplete="new-password" required><button class="button primary" type="submit">Reset</button></form></details></div>{% else %}<span class="muted">Protected administrator</span>{% endif %}</td></tr>
+  {% endfor %}</tbody></table></div>
+</section>
+{% endblock %}

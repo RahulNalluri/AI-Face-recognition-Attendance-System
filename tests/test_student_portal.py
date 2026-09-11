@@ -37,6 +37,9 @@ class StudentPortalTest(unittest.TestCase):
         self.database.save_staff_account(
             "admin", "Test Administrator", "admin", generate_password_hash("admin-password"),
         )
+        self.faculty_id = self.database.save_staff_account(
+            "faculty", "Test Faculty", "faculty", generate_password_hash("faculty-password"),
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -55,6 +58,12 @@ class StudentPortalTest(unittest.TestCase):
         return self.client.post("/login", data={
             "csrf_token": self.csrf(), "role": "admin",
             "username": "admin", "password": "admin-password",
+        })
+
+    def faculty_login(self, password="faculty-password"):
+        return self.client.post("/login", data={
+            "csrf_token": self.csrf(), "role": "faculty",
+            "username": "faculty", "password": password,
         })
 
     def add_completed_attendance(self) -> None:
@@ -158,6 +167,86 @@ class StudentPortalTest(unittest.TestCase):
         self.login()
         page = self.client.get("/student")
         self.assertIn(b"Required attendance: 80.0%", page.data)
+
+    def test_admin_links_student_account_and_forces_first_password_change(self) -> None:
+        self.staff_login()
+        other = self.database.student_by_identity("Other Student")
+        group_id = self.database.save_class_group("CSE Registration", "", [self.rahul_id])
+        token = self.csrf("/accounts")
+        created = self.client.post("/accounts/students", data={
+            "csrf_token": token, "student_id": other["id"], "group_id": group_id,
+            "username": "other.student",
+            "temporary_password": "temporary-123", "confirm_password": "temporary-123",
+        }, follow_redirects=True)
+        self.assertIn(b"Student account created and linked", created.data)
+        linked = self.database.student_account_by_username("other.student")
+        self.assertEqual(linked["student_id"], other["id"])
+        self.assertEqual(linked["password_change_required"], 1)
+        self.assertIn(group_id, self.database.student_group_ids(other["id"]))
+        self.client.post("/logout", data={"csrf_token": self.csrf("/accounts")})
+        response = self.client.post("/login", data={
+            "csrf_token": self.csrf(), "role": "student", "username": "other.student",
+            "password": "temporary-123",
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(self.client.get("/student").headers["Location"].endswith("/change-password"))
+        token = self.csrf("/change-password")
+        changed = self.client.post("/change-password", data={
+            "csrf_token": token, "current_password": "temporary-123",
+            "new_password": "student-owned-456", "confirm_password": "student-owned-456",
+        })
+        self.assertEqual(changed.status_code, 302)
+        self.assertEqual(
+            self.database.student_account_by_username("other.student")["password_change_required"], 0,
+        )
+
+    def test_faculty_cannot_manage_accounts_and_admin_can_reset_and_disable_faculty(self) -> None:
+        self.faculty_login()
+        self.assertEqual(self.client.get("/accounts").status_code, 403)
+        self.client.post("/logout", data={"csrf_token": self.csrf("/")})
+        self.staff_login()
+        token = self.csrf("/accounts")
+        reset = self.client.post(f"/accounts/faculty/{self.faculty_id}/reset-password", data={
+            "csrf_token": token, "temporary_password": "replacement-123",
+            "confirm_password": "replacement-123",
+        }, follow_redirects=True)
+        self.assertIn(b"Temporary password saved", reset.data)
+        account = self.database.staff_account_by_username("faculty")
+        self.assertEqual(account["password_change_required"], 1)
+        self.assertTrue(check_password_hash(account["password_hash"], "replacement-123"))
+        disabled = self.client.post(f"/accounts/faculty/{self.faculty_id}/toggle", data={
+            "csrf_token": token, "enabled": "0",
+        }, follow_redirects=True)
+        self.assertIn(b"Account disabled", disabled.data)
+        self.assertEqual(self.database.staff_account_by_username("faculty")["enabled"], 0)
+
+    def test_admin_assigns_subject_and_faculty_sees_focused_dashboard(self) -> None:
+        group_id = self.database.save_class_group("CSE A", "", [self.rahul_id])
+        self.staff_login()
+        token = self.csrf("/accounts")
+        response = self.client.post("/accounts/faculty-assignments", data={
+            "csrf_token": token, "staff_account_id": self.faculty_id,
+            "group_id": group_id, "subject_title": "Artificial Intelligence",
+        }, follow_redirects=True)
+        self.assertIn(b"Faculty subject and section assigned", response.data)
+        self.client.post("/logout", data={"csrf_token": self.csrf("/accounts")})
+        self.faculty_login()
+        dashboard = self.client.get("/faculty")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn(b"Artificial Intelligence", dashboard.data)
+        self.assertIn(b"CSE A", dashboard.data)
+        self.assertNotIn(b"Manage assignments", dashboard.data)
+
+    def test_student_download_contains_only_own_hourly_report(self) -> None:
+        self.add_completed_attendance()
+        self.login()
+        response = self.client.get("/student/report.csv")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+        self.assertIn(b"Artificial Intelligence", response.data)
+        self.assertIn(b"Overall attendance,50.0%", response.data)
+        self.assertIn(b"Passed checkpoints", response.data)
+        self.assertNotIn(b"Other Student", response.data)
 
     def test_demo_credentials_are_generated_once_and_password_is_hashed(self) -> None:
         root = Path(self.temporary.name)

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS student_accounts (
  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
  password_hash TEXT NOT NULL,
  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+ password_change_required INTEGER NOT NULL DEFAULT 0 CHECK (password_change_required IN (0,1)),
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT,
  FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
 );
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS staff_accounts (
  role TEXT NOT NULL CHECK (role IN ('admin','faculty')),
  password_hash TEXT NOT NULL,
  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+ password_change_required INTEGER NOT NULL DEFAULT 0 CHECK (password_change_required IN (0,1)),
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT
 );
 CREATE TABLE IF NOT EXISTS attendance_settings (
@@ -50,6 +52,14 @@ CREATE TABLE IF NOT EXISTS attendance_settings (
 );
 INSERT OR IGNORE INTO attendance_settings(id,minimum_percentage,updated_at)
 VALUES (1,75,CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS faculty_assignments (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ staff_account_id INTEGER NOT NULL REFERENCES staff_accounts(id) ON DELETE CASCADE,
+ group_id INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+ subject_title TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ UNIQUE(staff_account_id,group_id,subject_title COLLATE NOCASE)
+);
 CREATE TABLE IF NOT EXISTS monitor_sessions (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  title TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
@@ -221,6 +231,13 @@ class AttendanceDatabase:
     def initialize(self) -> None:
         with self.session() as connection:
             connection.executescript(SCHEMA)
+            for table in ("student_accounts", "staff_accounts"):
+                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if "password_change_required" not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN password_change_required "
+                        "INTEGER NOT NULL DEFAULT 0 CHECK (password_change_required IN (0,1))"
+                    )
 
     def students(self) -> list[sqlite3.Row]:
         with self.session() as connection:
@@ -252,7 +269,10 @@ class AttendanceDatabase:
             ).fetchone()
             return dict(row) if row else None
 
-    def save_student_account(self, student_id: int, username: str, password_hash: str) -> int:
+    def save_student_account(
+        self, student_id: int, username: str, password_hash: str,
+        password_change_required: bool = False, group_id: int | None = None,
+    ) -> int:
         username = username.strip().lower()
         if not username or len(username) > 80:
             raise ValueError("Username must contain 1 to 80 characters")
@@ -262,10 +282,21 @@ class AttendanceDatabase:
                 "SELECT id FROM students WHERE id=? AND active=1", (student_id,)
             ).fetchone():
                 raise ValueError("Choose an active student")
+            if group_id is not None and not connection.execute(
+                "SELECT id FROM class_groups WHERE id=?", (group_id,)
+            ).fetchone():
+                raise ValueError("Choose an existing section")
             cursor = connection.execute(
-                """INSERT INTO student_accounts(student_id,username,password_hash,created_at,updated_at)
-                VALUES (?,?,?,?,?)""", (student_id, username, password_hash, now, now),
+                """INSERT INTO student_accounts(
+                student_id,username,password_hash,password_change_required,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?)""",
+                (student_id, username, password_hash, int(password_change_required), now, now),
             )
+            if group_id is not None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO class_group_members(group_id,student_id) VALUES (?,?)",
+                    (group_id, student_id),
+                )
             return int(cursor.lastrowid)
 
     def record_student_login(self, account_id: int) -> None:
@@ -278,7 +309,8 @@ class AttendanceDatabase:
     def update_student_password(self, account_id: int, password_hash: str) -> None:
         with self.session() as connection:
             cursor = connection.execute(
-                "UPDATE student_accounts SET password_hash=?,updated_at=? WHERE id=? AND enabled=1",
+                """UPDATE student_accounts SET password_hash=?,password_change_required=0,
+                updated_at=? WHERE id=? AND enabled=1""",
                 (password_hash, datetime_text(utc_now()), account_id),
             )
             if cursor.rowcount != 1:
@@ -300,6 +332,7 @@ class AttendanceDatabase:
 
     def save_staff_account(
         self, username: str, display_name: str, role: str, password_hash: str,
+        password_change_required: bool = False,
     ) -> int:
         username, display_name, role = username.strip().lower(), display_name.strip(), role.strip().lower()
         if not username or len(username) > 80 or not display_name or len(display_name) > 100:
@@ -310,8 +343,9 @@ class AttendanceDatabase:
         with self.session() as connection:
             cursor = connection.execute(
                 """INSERT INTO staff_accounts(
-                username,display_name,role,password_hash,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?)""", (username, display_name, role, password_hash, now, now),
+                username,display_name,role,password_hash,password_change_required,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?)""",
+                (username, display_name, role, password_hash, int(password_change_required), now, now),
             )
             return int(cursor.lastrowid)
 
@@ -325,11 +359,110 @@ class AttendanceDatabase:
     def update_staff_password(self, account_id: int, password_hash: str) -> None:
         with self.session() as connection:
             cursor = connection.execute(
-                "UPDATE staff_accounts SET password_hash=?,updated_at=? WHERE id=? AND enabled=1",
+                """UPDATE staff_accounts SET password_hash=?,password_change_required=0,
+                updated_at=? WHERE id=? AND enabled=1""",
                 (password_hash, datetime_text(utc_now()), account_id),
             )
             if cursor.rowcount != 1:
                 raise ValueError("Staff account is unavailable")
+
+    def account_management_data(self) -> dict[str, Any]:
+        with self.session() as connection:
+            students = [dict(row) for row in connection.execute(
+                """SELECT s.id student_id,s.identity_label,s.display_name,s.registration_number,s.active,
+                a.id account_id,a.username,a.enabled,a.password_change_required,a.last_login_at,
+                (SELECT GROUP_CONCAT(g.name, ', ') FROM class_group_members m
+                 JOIN class_groups g ON g.id=m.group_id WHERE m.student_id=s.id) section_names
+                FROM students s LEFT JOIN student_accounts a ON a.student_id=s.id
+                ORDER BY s.display_name COLLATE NOCASE"""
+            )]
+            staff = [dict(row) for row in connection.execute(
+                """SELECT id account_id,username,display_name,role,enabled,
+                password_change_required,last_login_at FROM staff_accounts
+                ORDER BY role,display_name COLLATE NOCASE"""
+            )]
+        return {
+            "students": students, "staff": staff,
+            "groups": self.class_groups(), "assignments": self.faculty_assignments(),
+        }
+
+    def set_managed_account_enabled(self, account_type: str, account_id: int, enabled: bool) -> None:
+        table = {"student": "student_accounts", "faculty": "staff_accounts"}.get(account_type)
+        if table is None:
+            raise ValueError("Choose a student or faculty account")
+        with self.session() as connection:
+            if table == "staff_accounts":
+                row = connection.execute(
+                    "SELECT role FROM staff_accounts WHERE id=?", (account_id,)
+                ).fetchone()
+                if not row or row["role"] != "faculty":
+                    raise ValueError("Only faculty accounts can be managed here")
+            cursor = connection.execute(
+                f"UPDATE {table} SET enabled=?,updated_at=? WHERE id=?",
+                (int(enabled), datetime_text(utc_now()), account_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Account does not exist")
+
+    def reset_managed_password(
+        self, account_type: str, account_id: int, password_hash: str,
+    ) -> None:
+        table = {"student": "student_accounts", "faculty": "staff_accounts"}.get(account_type)
+        if table is None:
+            raise ValueError("Choose a student or faculty account")
+        with self.session() as connection:
+            if table == "staff_accounts":
+                row = connection.execute(
+                    "SELECT role FROM staff_accounts WHERE id=?", (account_id,)
+                ).fetchone()
+                if not row or row["role"] != "faculty":
+                    raise ValueError("Only faculty passwords can be reset here")
+            cursor = connection.execute(
+                f"""UPDATE {table} SET password_hash=?,password_change_required=1,
+                enabled=1,updated_at=? WHERE id=?""",
+                (password_hash, datetime_text(utc_now()), account_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Account does not exist")
+
+    def save_faculty_assignment(self, staff_account_id: int, group_id: int, subject_title: str) -> int:
+        title = subject_title.strip()
+        if not title or len(title) > 100:
+            raise ValueError("Subject must contain 1 to 100 characters")
+        with self.session() as connection:
+            staff = connection.execute(
+                "SELECT role FROM staff_accounts WHERE id=? AND enabled=1", (staff_account_id,)
+            ).fetchone()
+            if not staff or staff["role"] != "faculty":
+                raise ValueError("Choose an enabled faculty account")
+            if not connection.execute("SELECT 1 FROM class_groups WHERE id=?", (group_id,)).fetchone():
+                raise ValueError("Choose an existing section")
+            cursor = connection.execute(
+                """INSERT INTO faculty_assignments(
+                staff_account_id,group_id,subject_title,created_at
+                ) VALUES (?,?,?,?)""",
+                (staff_account_id, group_id, title, datetime_text(utc_now())),
+            )
+            return int(cursor.lastrowid)
+
+    def delete_faculty_assignment(self, assignment_id: int) -> None:
+        with self.session() as connection:
+            cursor = connection.execute("DELETE FROM faculty_assignments WHERE id=?", (assignment_id,))
+            if cursor.rowcount != 1:
+                raise ValueError("Faculty assignment does not exist")
+
+    def faculty_assignments(self, staff_account_id: int | None = None) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT a.*,f.display_name faculty_name,f.username faculty_username,
+                g.name group_name,(SELECT COUNT(*) FROM class_group_members m
+                JOIN students s ON s.id=m.student_id WHERE m.group_id=g.id AND s.active=1) member_count
+                FROM faculty_assignments a JOIN staff_accounts f ON f.id=a.staff_account_id
+                JOIN class_groups g ON g.id=a.group_id
+                WHERE (? IS NULL OR a.staff_account_id=?)
+                ORDER BY f.display_name,g.name,a.subject_title COLLATE NOCASE""",
+                (staff_account_id, staff_account_id),
+            )]
 
     def student_group_ids(self, student_id: int) -> set[int]:
         with self.session() as connection:
@@ -875,6 +1008,8 @@ class AttendanceDatabase:
                 for block in completed_hours
             )
             possible = len(roster_by_session.get(session_id, set())) * len(completed_hours)
+            item["present_hour_count"] = present_hours
+            item["possible_hour_count"] = possible
             item["attendance_percentage"] = (
                 round(present_hours * 100 / possible, 1)
                 if possible else None

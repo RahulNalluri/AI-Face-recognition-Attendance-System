@@ -7,6 +7,7 @@
     <h1>Welcome, {{ account.display_name }}</h1>
     <p>{{ account.registration_number }} · Required attendance: {{ plan.minimum }}%. Calculated from completed teaching hours only.</p>
   </div>
+  <div class="page-actions"><a class="button primary" href="{{ url_for('student_report') }}">Download my report</a></div>
 </div>
 
 <section class="student-summary">

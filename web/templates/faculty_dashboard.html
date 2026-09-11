@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Faculty dashboard · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Teaching overview</p><h1>Faculty dashboard</h1><p>Assigned subjects, sections, hourly attendance, and upcoming classes.</p></div>
+  {% if current_user.role == 'admin' %}<a class="button" href="{{ url_for('account_management') }}">Manage assignments</a>{% endif %}
+</div>
+
+{% if assignments %}<section class="faculty-grid">
+  {% for item in assignments %}<article class="panel faculty-card">
+    <div class="faculty-card-head"><div><span class="eyebrow">{{ item.group_name }}</span><h2>{{ item.subject_title }}</h2><small>{{ item.faculty_name }} · {{ item.member_count }} students</small></div><strong class="faculty-percentage">{{ '—' if item.attendance_percentage is none else '%.1f%%'|format(item.attendance_percentage) }}</strong></div>
+    <div class="faculty-meta"><span><b>{{ item.session_count }}</b> recorded sessions</span><span><b>{{ item.next_class.next_start|local_datetime if item.next_class else 'Not scheduled' }}</b> next class</span></div>
+    {% if item.recent_sessions %}<div class="faculty-sessions">{% for session in item.recent_sessions %}<a href="{{ url_for('session_detail', session_id=session.id) }}"><span>{{ session.starts_at|local_datetime }}</span><strong>{{ '—' if session.attendance_percentage is none else '%.1f%%'|format(session.attendance_percentage) }}</strong></a>{% endfor %}</div>{% else %}<div class="empty compact">No matching attendance sessions yet.</div>{% endif %}
+    <a class="button full" href="{{ url_for('dashboard', group_id=item.group_id) }}">Open attendance console</a>
+  </article>{% endfor %}
+</section>{% else %}<section class="panel empty"><h2>No subjects assigned</h2><p>{% if current_user.role == 'admin' %}Assign a faculty member, section, and subject from Account management.{% else %}Ask an administrator to assign your subjects and sections.{% endif %}</p></section>{% endif %}
+{% endblock %}

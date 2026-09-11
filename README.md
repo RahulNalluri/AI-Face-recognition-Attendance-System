@@ -79,6 +79,39 @@ and account administration are still required before college-network deployment.
 After a password change, the obsolete demo credential file is removed; the user
 must remember the new password.
 
+### Admin account management
+
+Admin users can open **Accounts** to manage login access. A student account is
+created by selecting an existing unlinked face-recognition identity and a section.
+Both the login-to-identity link and section-roster membership are saved in one
+transaction. This stores a direct database relationship between that login and
+the identity's private attendance records. An identity cannot be linked to more
+than one student account.
+Admins can also create faculty accounts, disable or re-enable student/faculty
+access without deleting attendance history, and set temporary replacement
+passwords. New and reset accounts must change the temporary password immediately
+after their next login. Faculty retains the same attendance-operation access as
+admin but cannot open account management or modify accounts. Administrator
+accounts are protected from the student/faculty management controls.
+
+### Faculty subject and section dashboard
+
+An administrator can assign an enabled faculty account to a section and subject
+from **Accounts**. The **Faculty dashboard** then shows only that faculty user's
+assigned subject/section cards, student count, exact hourly attendance percentage,
+matching recorded sessions, next timetable occurrence, and a shortcut to the live
+attendance console. Administrators can view all faculty assignments. Assignment
+changes organize access to the focused dashboard and never rewrite historical
+session rosters or attendance.
+
+### Student attendance download
+
+Students can select **Download my report** from their portal. The generated CSV
+contains only the signed-in student's identity, required and overall attendance,
+subject-wise completed/attended hours, shortage status and advice, plus recent
+hourly decisions with passed-checkpoint evidence. The download is generated on
+demand and is not written into the repository or server filesystem.
+
 The student dashboard includes an hourly attendance shortage planner.
 For each subject it classifies attendance as **Critical** (below the required
 percentage), **Warning** (within ten percentage points above it), or **Safe**.
@@ -468,7 +501,7 @@ real-world accuracy.
 - Passive anti-spoofing in addition to the current active liveness challenge.
 - Semester date ranges, holiday exceptions, and multi-camera timetables.
 - Configurable shortage alerts and student-downloadable attendance reports.
-- Account creation, password-reset administration, and account recovery.
+- Self-service forgotten-password recovery and administrator audit history.
 - PostgreSQL, HTTPS, and deployment hardening for multi-device operation.
 - Consent, encryption, biometric-data retention, and deletion controls.
 

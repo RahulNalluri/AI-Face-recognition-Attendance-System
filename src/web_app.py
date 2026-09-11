@@ -374,7 +374,15 @@ def create_app(
             return redirect(url_for("login"))
         if endpoint in {"logout", "legacy_student_logout", "change_password"}:
             return None
-        if endpoint == "student_portal":
+        if user.get("password_change_required"):
+            return redirect(url_for("change_password"))
+        if endpoint in {
+            "account_management", "create_student_account", "create_faculty_account",
+            "toggle_managed_account", "reset_managed_password", "create_faculty_assignment",
+            "delete_faculty_assignment",
+        } and user["role"] != "admin":
+            abort(403)
+        if endpoint in {"student_portal", "student_report"}:
             if user["role"] != "student":
                 return redirect(url_for("dashboard"))
             return None
@@ -484,14 +492,132 @@ def create_app(
                 database.update_student_password(int(user["id"]), password_hash)
             else:
                 database.update_staff_password(int(user["id"]), password_hash)
-            credential_file = Path(app.config["DEMO_CREDENTIAL_DIRECTORY"]) / (
-                "student_demo_credentials.txt" if user["role"] == "student"
-                else f"{user['role']}_demo_credentials.txt"
+            demo_usernames = {"student": "rahul", "faculty": "faculty", "admin": "admin"}
+            removed_demo_file = user["username"].casefold() == demo_usernames[user["role"]]
+            if removed_demo_file:
+                credential_file = Path(app.config["DEMO_CREDENTIAL_DIRECTORY"]) / (
+                    "student_demo_credentials.txt" if user["role"] == "student"
+                    else f"{user['role']}_demo_credentials.txt"
+                )
+                credential_file.unlink(missing_ok=True)
+            flash(
+                "Password changed successfully."
+                + (" The old demo credential file was removed." if removed_demo_file else ""),
+                "success",
             )
-            credential_file.unlink(missing_ok=True)
-            flash("Password changed successfully. The old demo credential file was removed.", "success")
             return redirect(url_for("student_portal" if user["role"] == "student" else "dashboard"))
         return render_template("change_password.html", error=None)
+
+    def temporary_password() -> str:
+        password = request.form.get("temporary_password", "")
+        confirmation = request.form.get("confirm_password", "")
+        if len(password) < 8:
+            raise ValueError("Temporary password must contain at least 8 characters")
+        if password != confirmation:
+            raise ValueError("Temporary password and confirmation do not match")
+        return password
+
+    @app.get("/accounts")
+    def account_management():
+        return render_template("accounts.html", data=database.account_management_data())
+
+    @app.post("/accounts/students")
+    def create_student_account():
+        try:
+            password = temporary_password()
+            database.save_student_account(
+                int(request.form.get("student_id", "")), request.form.get("username", ""),
+                generate_password_hash(password), password_change_required=True,
+                group_id=int(request.form.get("group_id", "")),
+            )
+            flash("Student account created and linked. A password change is required at first login.", "success")
+        except (TypeError, ValueError, sqlite3.IntegrityError) as error:
+            flash(f"Student account could not be created: {error}", "error")
+        return redirect(url_for("account_management"))
+
+    @app.post("/accounts/faculty")
+    def create_faculty_account():
+        try:
+            password = temporary_password()
+            database.save_staff_account(
+                request.form.get("username", ""), request.form.get("display_name", ""),
+                "faculty", generate_password_hash(password), password_change_required=True,
+            )
+            flash("Faculty account created. A password change is required at first login.", "success")
+        except (ValueError, sqlite3.IntegrityError) as error:
+            flash(f"Faculty account could not be created: {error}", "error")
+        return redirect(url_for("account_management"))
+
+    @app.post("/accounts/<account_type>/<int:account_id>/toggle")
+    def toggle_managed_account(account_type: str, account_id: int):
+        try:
+            raw_enabled = request.form.get("enabled")
+            if raw_enabled not in {"0", "1"}:
+                raise ValueError("Choose enable or disable")
+            enabled = raw_enabled == "1"
+            database.set_managed_account_enabled(account_type, account_id, enabled)
+            flash(f"Account {'enabled' if enabled else 'disabled'}.", "success")
+        except ValueError as error:
+            flash(str(error), "error")
+        return redirect(url_for("account_management"))
+
+    @app.post("/accounts/<account_type>/<int:account_id>/reset-password")
+    def reset_managed_password(account_type: str, account_id: int):
+        try:
+            password = temporary_password()
+            database.reset_managed_password(account_type, account_id, generate_password_hash(password))
+            flash("Temporary password saved. The user must change it at the next login.", "success")
+        except ValueError as error:
+            flash(str(error), "error")
+        return redirect(url_for("account_management"))
+
+    @app.post("/accounts/faculty-assignments")
+    def create_faculty_assignment():
+        try:
+            database.save_faculty_assignment(
+                int(request.form.get("staff_account_id", "")),
+                int(request.form.get("group_id", "")),
+                request.form.get("subject_title", ""),
+            )
+            flash("Faculty subject and section assigned.", "success")
+        except (TypeError, ValueError, sqlite3.IntegrityError) as error:
+            flash(f"Assignment could not be saved: {error}", "error")
+        return redirect(url_for("account_management"))
+
+    @app.post("/accounts/faculty-assignments/<int:assignment_id>/delete")
+    def delete_faculty_assignment(assignment_id: int):
+        try:
+            database.delete_faculty_assignment(assignment_id)
+            flash("Faculty assignment removed. Attendance history is unchanged.", "success")
+        except ValueError as error:
+            flash(str(error), "error")
+        return redirect(url_for("account_management"))
+
+    @app.get("/faculty")
+    def faculty_dashboard():
+        user = current_user()
+        assignments = database.faculty_assignments(
+            None if user["role"] == "admin" else int(user["id"])
+        )
+        history = database.session_history()
+        upcoming = timetable.upcoming()
+        for assignment in assignments:
+            matching = [
+                row for row in history
+                if row.get("group_id") == assignment["group_id"]
+                and row["title"].strip().casefold() == assignment["subject_title"].casefold()
+            ]
+            present = sum(row["present_hour_count"] for row in matching)
+            possible = sum(row["possible_hour_count"] for row in matching)
+            assignment["attendance_percentage"] = round(present * 100 / possible, 1) if possible else None
+            assignment["session_count"] = len(matching)
+            assignment["recent_sessions"] = matching[:5]
+            assignment["next_class"] = next((
+                row for row in upcoming
+                if row["group_id"] == assignment["group_id"]
+                and row["title"].strip().casefold() == assignment["subject_title"].casefold()
+            ), None)
+        return render_template("faculty_dashboard.html", assignments=assignments)
 
     @app.get("/student")
     def student_portal():
@@ -503,6 +629,49 @@ def create_app(
         return render_template(
             "student_portal.html", account=student_account, report=report,
             upcoming=plan["upcoming"], plan=plan,
+        )
+
+    @app.get("/student/report.csv")
+    def student_report():
+        student_account = current_user()
+        report = database.student_portal_data(int(student_account["student_id"]))
+        memberships = database.student_group_ids(int(student_account["student_id"]))
+        upcoming = [row for row in timetable.upcoming() if int(row["group_id"]) in memberships]
+        plan = build_shortage_plan(report, upcoming[:12], database.attendance_minimum())
+
+        def safe_csv(value) -> str:
+            text = str(value or "")
+            return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Student attendance report"])
+        writer.writerow(["Name", safe_csv(student_account["display_name"])])
+        writer.writerow(["Registration", safe_csv(student_account["registration_number"])])
+        writer.writerow(["Required attendance", f"{plan['minimum']:g}%"])
+        writer.writerow(["Overall attendance", "" if report["percentage"] is None else f"{report['percentage']:.1f}%"])
+        writer.writerow([])
+        writer.writerow(["Subject", "Hours attended", "Completed hours", "Percentage", "Status", "Advice"])
+        for subject in plan["subjects"]:
+            writer.writerow([
+                safe_csv(subject["title"]), subject["attended"], subject["completed"],
+                f"{subject['percentage']:.1f}%", subject["status"], safe_csv(subject["message"]),
+            ])
+        writer.writerow([])
+        writer.writerow(["Recent hourly attendance"])
+        writer.writerow(["Subject", "Hour", "Start", "End", "Passed checkpoints", "Status"])
+        for hour in report["recent"]:
+            writer.writerow([
+                safe_csv(hour["title"]), hour["hour_number"], hour["starts_at"], hour["ends_at"],
+                f"{hour['passed_checkpoints']}/{hour['checkpoint_count']}", hour["status"],
+            ])
+        safe_name = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in student_account["display_name"]
+        ).strip("_") or "student"
+        return Response(
+            output.getvalue(), mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_attendance_report.csv"'},
         )
 
     @app.get("/")

@@ -9,7 +9,28 @@
 <body>
   <header class="topbar">
     <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-mark">A</span><span>AttendAI</span></a>
-    <div class="header-actions"><a href="{{ url_for('class_groups_page') }}">Class groups</a><a href="{{ url_for('timetable_page') }}">Timetable</a><a href="{{ url_for('recognition_validation') }}">Recognition validation</a><a href="{{ url_for('session_history') }}">Session history</a>{% if current_user %}<span class="role-badge">{{ current_user.role }}</span><a href="{{ url_for('change_password') }}">Change password</a><form action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit">Sign out</button></form>{% endif %}</div>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="{{ 'active' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">Overview</a>
+      <a class="{{ 'active' if request.endpoint in ['class_groups_page','new_class_group','edit_class_group'] else '' }}" href="{{ url_for('class_groups_page') }}">Sections</a>
+      <a class="{{ 'active' if request.endpoint in ['timetable_page','new_timetable','edit_timetable'] else '' }}" href="{{ url_for('timetable_page') }}">Timetable</a>
+      <a class="{{ 'active' if request.endpoint == 'faculty_dashboard' else '' }}" href="{{ url_for('faculty_dashboard') }}">Faculty</a>
+      <details class="nav-menu" {% if request.endpoint in ['recognition_validation','session_history','session_detail'] %}data-current="true"{% endif %}>
+        <summary>Reports <span aria-hidden="true">⌄</span></summary>
+        <div class="nav-popover">
+          <a href="{{ url_for('recognition_validation') }}"><strong>Recognition validation</strong><small>Model accuracy and deployment checks</small></a>
+          <a href="{{ url_for('session_history') }}"><strong>Session history</strong><small>Hourly attendance reports and exports</small></a>
+        </div>
+      </details>
+      {% if current_user and current_user.role == 'admin' %}<a class="{{ 'active' if request.endpoint in ['account_management','create_student_account','create_faculty_account'] else '' }}" href="{{ url_for('account_management') }}">Accounts</a>{% endif %}
+    </nav>
+    {% if current_user %}<details class="profile-menu">
+      <summary><span class="profile-avatar">{{ current_user.display_name[0]|upper }}</span><span class="profile-copy"><strong>{{ current_user.display_name }}</strong><small>{{ current_user.role }}</small></span><span class="profile-chevron" aria-hidden="true">⌄</span></summary>
+      <div class="profile-popover">
+        <div class="profile-identity"><strong>{{ current_user.display_name }}</strong><small>@{{ current_user.username }} · {{ current_user.role|title }}</small></div>
+        <a href="{{ url_for('change_password') }}">Change password</a>
+        <form action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Sign out</button></form>
+      </div>
+    </details>{% endif %}
   </header>
   <main class="page">
     {% with messages = get_flashed_messages(with_categories=true) %}
