@@ -5,15 +5,15 @@
   <div>
     <p class="eyebrow">Student dashboard</p>
     <h1>Welcome, {{ account.display_name }}</h1>
-    <p>{{ account.registration_number }} · Attendance is calculated from completed checkpoints only.</p>
+    <p>{{ account.registration_number }} · Required attendance: {{ plan.minimum }}%. Calculated from completed checkpoints only.</p>
   </div>
 </div>
 
 <section class="student-summary">
-  <article class="percentage-card {{ 'needs-attention' if report.percentage is not none and report.percentage < 75 else '' }}">
+  <article class="percentage-card {{ 'needs-attention' if plan.overall.status == 'critical' else '' }}">
     <span>Overall attendance</span>
     <strong>{{ report.percentage|round(1) ~ '%' if report.percentage is not none else '—' }}</strong>
-    <small>{{ report.attended }} present out of {{ report.completed }} completed checks</small>
+    <small>{{ plan.overall.message }}</small>
   </article>
   <article><span>Present</span><strong>{{ report.attended }}</strong><small>Completed checkpoints</small></article>
   <article><span>Missed</span><strong>{{ report.missed }}</strong><small>Completed checkpoints</small></article>
@@ -21,15 +21,17 @@
 </section>
 
 <section class="panel">
-  <div class="panel-heading"><div><h2>Subject-wise attendance</h2><p>See which subjects may need more attention.</p></div></div>
-  {% if report.subjects %}
+  <div class="panel-heading"><div><h2>Attendance shortage planner</h2><p>{{ plan.shortage_count }} subject{{ '' if plan.shortage_count == 1 else 's' }} below the {{ plan.minimum }}% requirement. Each class may contain multiple checkpoints.</p></div></div>
+  {% if plan.subjects %}
     <div class="subject-grid">
-      {% for subject in report.subjects %}
-      <article class="subject-card">
+      {% for subject in plan.subjects %}
+      <article class="subject-card planner-card {{ subject.status }}">
         <div><h3>{{ subject.title }}</h3><small>{{ subject.class_names or 'General session' }}</small></div>
-        <strong class="{{ 'low-attendance' if subject.percentage < 75 else 'good-attendance' }}">{{ subject.percentage }}%</strong>
+        <div class="plan-score"><span class="risk-badge {{ subject.status }}">{{ subject.status|replace('-', ' ') }}</span><strong>{{ subject.percentage }}%</strong></div>
         <div class="progress"><span style="width: {{ [subject.percentage, 100]|min }}%"></span></div>
-        <small>{{ subject.attended }} of {{ subject.completed }} completed checks present{% if subject.percentage < 75 %} · attendance needs attention{% endif %}</small>
+        <p class="plan-message">{{ subject.message }}</p>
+        <div class="plan-facts"><span><b>{{ subject.attended }}/{{ subject.completed }}</b> checks attended</span>{% if subject.needed %}<span><b>≈ {{ subject.estimated_classes }}</b> full class{{ '' if subject.estimated_classes == 1 else 'es' }}</span>{% else %}<span><b>{{ subject.can_miss }}</b> checks can be missed</span>{% endif %}</div>
+        {% if subject.next_class %}<small class="next-priority">Next: {{ subject.next_class.next_start|local_datetime }}</small>{% endif %}
       </article>
       {% endfor %}
     </div>
@@ -42,7 +44,7 @@
     {% if upcoming %}
       <div class="upcoming-list">
         {% for item in upcoming %}
-        <article><div class="date-tile"><strong>{{ item.next_start|local_datetime }}</strong></div><div><h3>{{ item.title }}</h3><small>{{ item.group_name }} · {{ item.duration_minutes }} minutes</small></div></article>
+        <article class="{{ 'priority-class' if item.attendance_plan and item.attendance_plan.status == 'critical' else '' }}"><div class="date-tile"><strong>{{ item.next_start|local_datetime }}</strong></div><div><h3>{{ item.title }}{% if item.attendance_plan and item.attendance_plan.status == 'critical' %} <span class="risk-badge critical">Priority</span>{% endif %}</h3><small>{{ item.group_name }} · {{ item.duration_minutes }} minutes{% if item.attendance_plan and item.attendance_plan.needed %} · {{ item.attendance_plan.needed }} checks needed{% endif %}</small></div></article>
         {% endfor %}
       </div>
     {% else %}<div class="empty compact">No upcoming timetable classes are assigned to your section.</div>{% endif %}

@@ -78,6 +78,16 @@ and account administration are still required before college-network deployment.
 After a password change, the obsolete demo credential file is removed; the user
 must remember the new password.
 
+The student dashboard includes a checkpoint-aware attendance shortage planner.
+For each subject it classifies attendance as **Critical** (below the required
+percentage), **Warning** (within ten percentage points above it), or **Safe**.
+It calculates how many consecutive checkpoints must be attended to recover, or
+how many can still be missed without falling below the requirement. Because one
+long class can contain multiple checkpoints, the planner also estimates the
+number of full classes needed and highlights the next matching timetable class.
+Admin and faculty users can change the required percentage from the attendance
+policy panel on the main dashboard; the value is stored in the private database.
+
 ## CNN architecture
 
 ```text

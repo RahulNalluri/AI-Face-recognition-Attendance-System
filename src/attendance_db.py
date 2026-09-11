@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS staff_accounts (
  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT
 );
+CREATE TABLE IF NOT EXISTS attendance_settings (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ minimum_percentage REAL NOT NULL DEFAULT 75 CHECK(minimum_percentage>0 AND minimum_percentage<100),
+ updated_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO attendance_settings(id,minimum_percentage,updated_at)
+VALUES (1,75,CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS monitor_sessions (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  title TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
@@ -327,6 +334,23 @@ class AttendanceDatabase:
             return {int(row[0]) for row in connection.execute(
                 "SELECT group_id FROM class_group_members WHERE student_id=?", (student_id,)
             )}
+
+    def attendance_minimum(self) -> float:
+        with self.session() as connection:
+            return float(connection.execute(
+                "SELECT minimum_percentage FROM attendance_settings WHERE id=1"
+            ).fetchone()[0])
+
+    def set_attendance_minimum(self, percentage: float) -> float:
+        value = float(percentage)
+        if not 1 <= value <= 99:
+            raise ValueError("Minimum attendance must be between 1% and 99%")
+        with self.session() as connection:
+            connection.execute(
+                "UPDATE attendance_settings SET minimum_percentage=?,updated_at=? WHERE id=1",
+                (value, datetime_text(utc_now())),
+            )
+        return value
 
     def student_portal_data(self, student_id: int, now: datetime | None = None) -> dict[str, Any]:
         """Return private, effective attendance totals for one student only."""

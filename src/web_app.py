@@ -24,6 +24,7 @@ from flask import Flask, Response, abort, flash, jsonify, redirect, render_templ
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from attendance_db import AttendanceDatabase, DEFAULT_DATABASE
+from attendance_planner import build_shortage_plan
 from timetable import Timetable, TimetableScheduler, WEEKDAYS
 from section_setup import SectionSetup, normalize_grid
 
@@ -498,9 +499,10 @@ def create_app(
         report = database.student_portal_data(int(student_account["student_id"]))
         memberships = database.student_group_ids(int(student_account["student_id"]))
         upcoming = [row for row in timetable.upcoming() if int(row["group_id"]) in memberships]
+        plan = build_shortage_plan(report, upcoming[:12], database.attendance_minimum())
         return render_template(
             "student_portal.html", account=student_account, report=report,
-            upcoming=upcoming[:12],
+            upcoming=plan["upcoming"], plan=plan,
         )
 
     @app.get("/")
@@ -509,7 +511,17 @@ def create_app(
         return render_template(
             "dashboard.html", data=database.monitor_data(), camera=camera_status(),
             groups=database.class_groups(), selected_group_id=request.args.get("group_id", type=int) or timetable.camera_section()["group_id"],
+            attendance_minimum=database.attendance_minimum(),
         )
+
+    @app.post("/settings/attendance-minimum")
+    def set_attendance_minimum():
+        try:
+            value = database.set_attendance_minimum(float(request.form.get("minimum_percentage", "")))
+            flash(f"Minimum attendance updated to {value:g}%.", "success")
+        except (TypeError, ValueError) as error:
+            flash(str(error), "error")
+        return redirect(url_for("dashboard"))
 
     @app.get("/classes")
     def class_groups_page():

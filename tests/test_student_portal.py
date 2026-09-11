@@ -139,6 +139,20 @@ class StudentPortalTest(unittest.TestCase):
         self.assertEqual(self.login("test-password").status_code, 401)
         self.assertEqual(self.login("new-password-123").status_code, 302)
 
+    def test_staff_can_change_required_percentage_used_by_student_planner(self) -> None:
+        self.staff_login()
+        token = self.csrf("/")
+        changed = self.client.post("/settings/attendance-minimum", data={
+            "csrf_token": token, "minimum_percentage": "80",
+        })
+        self.assertEqual(changed.status_code, 302)
+        self.assertEqual(self.database.attendance_minimum(), 80.0)
+        token = self.csrf("/")
+        self.client.post("/logout", data={"csrf_token": token})
+        self.login()
+        page = self.client.get("/student")
+        self.assertIn(b"Required attendance: 80.0%", page.data)
+
     def test_demo_credentials_are_generated_once_and_password_is_hashed(self) -> None:
         root = Path(self.temporary.name)
         fresh_db = root / "demo.db"

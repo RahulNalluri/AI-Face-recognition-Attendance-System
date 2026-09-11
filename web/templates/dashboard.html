@@ -6,6 +6,15 @@
   <div class="page-actions"><a class="button ghost" href="{{ url_for('session_history') }}">Session history</a>{% if data.session %}<a class="button ghost" href="{{ url_for('export_session_csv', session_id=data.session.id) }}">Export attendance</a>{% endif %}</div>
 </div>
 
+<section class="panel attendance-policy">
+  <div><span class="eyebrow">Attendance policy</span><strong>Minimum required attendance</strong><small>Student shortage plans and safe absence limits use this percentage.</small></div>
+  <form method="post" action="{{ url_for('set_attendance_minimum') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><span>Required percentage</span><span class="percentage-input"><input type="number" name="minimum_percentage" min="1" max="99" step="0.1" value="{{ attendance_minimum }}" required><b>%</b></span></label>
+    <button class="button" type="submit">Save policy</button>
+  </form>
+</section>
+
 {% include "camera_section.html" %}
 <section class="monitor-grid">
   <article class="panel camera-panel">
