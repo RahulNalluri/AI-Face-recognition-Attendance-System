@@ -59,7 +59,7 @@ class StudentPortalTest(unittest.TestCase):
 
     def add_completed_attendance(self) -> None:
         start = datetime.now(timezone.utc) - timedelta(hours=3)
-        session_id = self.database.start_session("Artificial Intelligence", start, 70, 60, 5)
+        session_id = self.database.start_session("Artificial Intelligence", start, 120, 30, 5)
         with self.database.session() as connection:
             checkpoints = connection.execute(
                 "SELECT * FROM monitor_checkpoints WHERE session_id=? ORDER BY checkpoint_number", (session_id,)
@@ -70,6 +70,12 @@ class StudentPortalTest(unittest.TestCase):
                 ) VALUES (?,?,?,?,1)""",
                 (checkpoints[0]["id"], self.rahul_id, checkpoints[0]["opens_at"], 0.93),
             )
+            connection.execute(
+                """INSERT INTO monitor_attendance(
+                checkpoint_id,student_id,recognized_at,similarity,liveness_passed
+                ) VALUES (?,?,?,?,1)""",
+                (checkpoints[1]["id"], self.rahul_id, checkpoints[1]["opens_at"], 0.94),
+            )
             other_id = connection.execute(
                 "SELECT id FROM students WHERE identity_label='Other Student'"
             ).fetchone()[0]
@@ -77,7 +83,7 @@ class StudentPortalTest(unittest.TestCase):
                 """INSERT INTO monitor_attendance(
                 checkpoint_id,student_id,recognized_at,similarity,liveness_passed
                 ) VALUES (?,?,?,?,1)""",
-                (checkpoints[1]["id"], other_id, checkpoints[1]["opens_at"], 0.91),
+                (checkpoints[2]["id"], other_id, checkpoints[2]["opens_at"], 0.91),
             )
 
     def test_login_is_required_and_bad_password_is_generic(self) -> None:
@@ -108,7 +114,7 @@ class StudentPortalTest(unittest.TestCase):
             timetable.save(
                 group_id=group_id, title=title, weekday=future.weekday(),
                 start_time=future.strftime("%H:%M"), duration_minutes=60,
-                checkpoint_interval_minutes=60, checkpoint_window_minutes=10,
+                checkpoint_interval_minutes=20, checkpoint_window_minutes=10,
                 timezone_name="UTC",
             )
         self.login()

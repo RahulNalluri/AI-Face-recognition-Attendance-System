@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from attendance_hours import build_hour_blocks, evaluate_hour
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATABASE = ROOT / "instance" / "attendance_monitor.db"
 
@@ -353,8 +355,8 @@ class AttendanceDatabase:
         return value
 
     def student_portal_data(self, student_id: int, now: datetime | None = None) -> dict[str, Any]:
-        """Return private, effective attendance totals for one student only."""
-        current = datetime_text(ensure_aware(now or utc_now()))
+        """Return private attendance totals aggregated into 60-minute teaching blocks."""
+        current_dt = ensure_aware(now or utc_now())
         with self.session() as connection:
             student = connection.execute(
                 "SELECT * FROM students WHERE id=? AND active=1", (student_id,)
@@ -377,12 +379,47 @@ class AttendanceDatabase:
                 LEFT JOIN session_class_groups cg ON cg.session_id=ms.id
                 LEFT JOIN monitor_attendance a ON a.checkpoint_id=c.id AND a.student_id=r.student_id
                 LEFT JOIN attendance_overrides o ON o.checkpoint_id=c.id AND o.student_id=r.student_id
-                WHERE r.student_id=? AND c.closes_at<=?
-                ORDER BY c.closes_at DESC,c.id DESC""", (student_id, current),
+                WHERE r.student_id=?
+                ORDER BY ms.starts_at,c.checkpoint_number""", (student_id,),
             )]
 
-        subjects: dict[str, dict[str, Any]] = {}
+        sessions: dict[int, dict[str, Any]] = {}
         for row in rows:
+            item = sessions.setdefault(row["session_id"], {
+                "session": {
+                    "id": row["session_id"], "title": row["title"],
+                    "starts_at": row["starts_at"], "ends_at": row["ends_at"],
+                    "class_name": row["class_name"],
+                },
+                "checkpoints": [], "passed": set(),
+            })
+            item["checkpoints"].append({
+                "id": row["checkpoint_id"], "opens_at": row["opens_at"],
+                "closes_at": row["closes_at"],
+            })
+            if row["is_present"]:
+                item["passed"].add(int(row["checkpoint_id"]))
+
+        hours = []
+        configuration_issues = 0
+        for item in sessions.values():
+            for block in build_hour_blocks(item["session"], item["checkpoints"], current_dt):
+                result = evaluate_hour(block, item["passed"])
+                if result["status"] == "insufficient-checks":
+                    configuration_issues += 1
+                    continue
+                if result["status"] not in {"present", "absent"}:
+                    continue
+                hours.append({
+                    **result, "session_id": item["session"]["id"],
+                    "title": item["session"]["title"],
+                    "class_name": item["session"]["class_name"],
+                    "is_present": result["status"] == "present",
+                })
+        hours.sort(key=lambda row: (row["ends_at"], row["session_id"]), reverse=True)
+
+        subjects: dict[str, dict[str, Any]] = {}
+        for row in hours:
             key = row["title"].strip().casefold()
             subject = subjects.setdefault(key, {
                 "title": row["title"], "attended": 0, "completed": 0,
@@ -396,14 +433,14 @@ class AttendanceDatabase:
             subject["percentage"] = round(subject["attended"] * 100 / subject["completed"], 1)
             subject["class_names"] = ", ".join(sorted(subject["class_names"]))
 
-        attended = sum(int(row["is_present"]) for row in rows)
-        completed = len(rows)
+        attended = sum(int(row["is_present"]) for row in hours)
+        completed = len(hours)
         return {
             "student": dict(student), "attended": attended, "completed": completed,
             "missed": completed - attended,
             "percentage": round(attended * 100 / completed, 1) if completed else None,
             "subjects": sorted(subjects.values(), key=lambda item: item["title"].casefold()),
-            "recent": rows[:20],
+            "recent": hours[:20], "configuration_issues": configuration_issues,
         }
 
     def class_groups(self) -> list[dict[str, Any]]:
@@ -515,8 +552,8 @@ class AttendanceDatabase:
             return len(sessions)
 
     def start_session(
-        self, title: str, starts_at: datetime, duration_minutes: int = 130,
-        checkpoint_interval_minutes: int = 65, checkpoint_window_minutes: int = 10,
+        self, title: str, starts_at: datetime, duration_minutes: int = 60,
+        checkpoint_interval_minutes: int = 20, checkpoint_window_minutes: int = 10,
         group_id: int | None = None,
     ) -> int:
         if not title.strip():
@@ -785,7 +822,8 @@ class AttendanceDatabase:
 
     def session_history(self) -> list[dict[str, Any]]:
         self.refresh_statuses()
-        current = datetime_text(utc_now())
+        current_dt = utc_now()
+        current = datetime_text(current_dt)
         with self.session() as connection:
             rows = connection.execute(
                 """SELECT s.*,g.group_id,g.group_name_snapshot,
@@ -794,30 +832,51 @@ class AttendanceDatabase:
                 (SELECT COUNT(*) FROM monitor_checkpoints c
                     WHERE c.session_id=s.id AND c.closes_at<=?) completed_checkpoint_count,
                 (SELECT COUNT(*) FROM monitor_attendance a JOIN monitor_checkpoints c
-                    ON c.id=a.checkpoint_id WHERE c.session_id=s.id) attendance_count,
-                (SELECT COUNT(*) FROM monitor_checkpoints c
-                    JOIN session_roster r ON r.session_id=s.id
-                    WHERE c.session_id=s.id AND c.closes_at<=? AND (
-                        EXISTS (SELECT 1 FROM attendance_overrides o
-                            WHERE o.checkpoint_id=c.id AND o.student_id=r.student_id
-                            AND o.override_status='present')
-                        OR (
-                            NOT EXISTS (SELECT 1 FROM attendance_overrides o
-                                WHERE o.checkpoint_id=c.id AND o.student_id=r.student_id)
-                            AND EXISTS (SELECT 1 FROM monitor_attendance a
-                                WHERE a.checkpoint_id=c.id AND a.student_id=r.student_id)
-                        )
-                    )) completed_attendance_count
+                    ON c.id=a.checkpoint_id WHERE c.session_id=s.id) attendance_count
                 FROM monitor_sessions s LEFT JOIN session_class_groups g ON g.session_id=s.id
                 ORDER BY s.starts_at DESC,s.id DESC""",
-                (current, current),
+                (current,),
             ).fetchall()
+            checkpoints = [dict(row) for row in connection.execute(
+                "SELECT id,session_id,opens_at,closes_at FROM monitor_checkpoints"
+            )]
+            roster_rows = connection.execute(
+                "SELECT session_id,student_id FROM session_roster"
+            ).fetchall()
+            passed_rows = connection.execute(
+                """SELECT c.session_id,r.student_id,c.id checkpoint_id
+                FROM monitor_checkpoints c JOIN session_roster r ON r.session_id=c.session_id
+                LEFT JOIN monitor_attendance a ON a.checkpoint_id=c.id AND a.student_id=r.student_id
+                LEFT JOIN attendance_overrides o ON o.checkpoint_id=c.id AND o.student_id=r.student_id
+                WHERE o.override_status='present' OR (o.override_status IS NULL AND a.id IS NOT NULL)"""
+            ).fetchall()
+        checkpoints_by_session: dict[int, list[dict[str, Any]]] = {}
+        for checkpoint in checkpoints:
+            checkpoints_by_session.setdefault(int(checkpoint["session_id"]), []).append(checkpoint)
+        roster_by_session: dict[int, set[int]] = {}
+        for row in roster_rows:
+            roster_by_session.setdefault(int(row["session_id"]), set()).add(int(row["student_id"]))
+        passed_by_person: dict[tuple[int, int], set[int]] = {}
+        for row in passed_rows:
+            passed_by_person.setdefault(
+                (int(row["session_id"]), int(row["student_id"])), set()
+            ).add(int(row["checkpoint_id"]))
         history = []
         for row in rows:
             item = dict(row)
-            possible = item["roster_count"] * item["completed_checkpoint_count"]
+            session_id = int(item["id"])
+            blocks = build_hour_blocks(item, checkpoints_by_session.get(session_id, []), current_dt)
+            completed_hours = [block for block in blocks if block["completed"] and block["evaluable"]]
+            item["hour_count"] = len(blocks)
+            item["completed_hour_count"] = len(completed_hours)
+            present_hours = sum(
+                evaluate_hour(block, passed_by_person.get((session_id, student_id), set()))["status"] == "present"
+                for student_id in roster_by_session.get(session_id, set())
+                for block in completed_hours
+            )
+            possible = len(roster_by_session.get(session_id, set())) * len(completed_hours)
             item["attendance_percentage"] = (
-                round(item["completed_attendance_count"] * 100 / possible, 1)
+                round(present_hours * 100 / possible, 1)
                 if possible else None
             )
             history.append(item)
@@ -866,13 +925,15 @@ class AttendanceDatabase:
             ).fetchall()]
         record_map = {(row["student_id"], row["checkpoint_id"]): row for row in attendance}
         override_map = {(row["student_id"], row["checkpoint_id"]): row for row in overrides}
+        session_data = dict(session_row)
+        hour_blocks = build_hour_blocks(session_data, checkpoints, now)
+        completed_hours = [block for block in hour_blocks if block["completed"] and block["evaluable"]]
         completed_ids = {
             checkpoint["id"] for checkpoint in checkpoints
             if checkpoint["closes_at"] <= now_text
         }
         for student in roster:
             cells = []
-            attended_completed = 0
             attended_total = 0
             for checkpoint in checkpoints:
                 record = record_map.get((student["student_id"], checkpoint["id"]))
@@ -884,36 +945,43 @@ class AttendanceDatabase:
                 status = override["override_status"] if override else automatic_status
                 if status == "present":
                     attended_total += 1
-                    if checkpoint["id"] in completed_ids:
-                        attended_completed += 1
                 cells.append({
                     "checkpoint": checkpoint, "record": record, "status": status,
                     "automatic_status": automatic_status, "override": override,
                     "editable": checkpoint["id"] in completed_ids,
                 })
             student["cells"] = cells
-            student["attended_count"] = attended_total
-            student["attendance_percentage"] = (
-                round(attended_completed * 100 / len(completed_ids), 1)
-                if completed_ids else None
+            passed_ids = {
+                int(cell["checkpoint"]["id"]) for cell in cells if cell["status"] == "present"
+            }
+            student["hour_cells"] = [evaluate_hour(block, passed_ids) for block in hour_blocks]
+            student["checkpoint_attended_count"] = attended_total
+            student["attended_count"] = sum(
+                cell["status"] == "present" for cell in student["hour_cells"]
             )
-        completed_possible = len(completed_ids) * len(roster)
-        completed_present = sum(
-            1 for student in roster for cell in student["cells"]
-            if cell["checkpoint"]["id"] in completed_ids and cell["status"] == "present"
-        )
+            student["attendance_percentage"] = (
+                round(student["attended_count"] * 100 / len(completed_hours), 1)
+                if completed_hours else None
+            )
+        completed_possible = len(completed_hours) * len(roster)
+        completed_present = sum(student["attended_count"] for student in roster)
         for checkpoint in checkpoints:
             checkpoint["attendance_count"] = sum(
                 1 for student in roster for cell in student["cells"]
                 if cell["checkpoint"]["id"] == checkpoint["id"] and cell["status"] == "present"
             )
         return {
-            "session": dict(session_row),
+            "session": session_data,
             "checkpoints": checkpoints,
+            "hours": hour_blocks,
             "roster": roster,
             "attendance": attendance,
             "audit": audit,
             "completed_checkpoint_count": len(completed_ids),
+            "completed_hour_count": len(completed_hours),
+            "configuration_hour_count": sum(
+                block["completed"] and not block["evaluable"] for block in hour_blocks
+            ),
             "attendance_percentage": (
                 round(completed_present * 100 / completed_possible, 1)
                 if completed_possible else None

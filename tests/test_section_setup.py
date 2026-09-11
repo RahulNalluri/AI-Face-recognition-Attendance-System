@@ -52,7 +52,7 @@ class SectionSetupTest(unittest.TestCase):
         self.assertEqual(len(entries), 2)
         self.assertEqual([e["start_time"] for e in entries], ["09:30", "10:30"])
         self.assertEqual(entries[0]["duration_minutes"], 45)
-        self.assertEqual(entries[0]["checkpoint_interval_minutes"], 45)
+        self.assertEqual(entries[0]["checkpoint_interval_minutes"], 20)
         self.assertEqual(entries[0]["checkpoint_window_minutes"], 10)
         self.assertEqual(profile["grid"]["subjects"][0][:2], ["AI", "Networks"])
 

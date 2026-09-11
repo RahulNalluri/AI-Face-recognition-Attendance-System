@@ -7,13 +7,13 @@
 </div>
 <section class="panel">
   <div class="table-wrap"><table>
-    <thead><tr><th>Session</th><th>Scheduled time</th><th>Status</th><th>Roster</th><th>Checkpoints</th><th>Records</th><th>Attendance</th><th></th></tr></thead>
+    <thead><tr><th>Session</th><th>Scheduled time</th><th>Status</th><th>Roster</th><th>Teaching hours</th><th>Evidence records</th><th>Attendance</th><th></th></tr></thead>
     <tbody>{% for item in history %}<tr>
       <td><strong>{{ item.title }}</strong><small>{{ item.group_name_snapshot or 'All enrolled identities' }} · Session #{{ item.id }}</small></td>
       <td>{{ item.starts_at|local_datetime }}<small>to {{ item.ends_at|local_datetime }}</small></td>
       <td><span class="badge {{ item.status }}">{{ item.status }}</span></td>
       <td>{{ item.roster_count }}</td>
-      <td>{{ item.completed_checkpoint_count }}/{{ item.checkpoint_count }} completed</td>
+      <td>{{ item.completed_hour_count }}/{{ item.hour_count }} hours completed</td>
       <td>{{ item.attendance_count }}</td>
       <td>{{ '—' if item.attendance_percentage is none else '%.1f%%'|format(item.attendance_percentage) }}</td>
       <td><a class="text-link" href="{{ url_for('session_detail', session_id=item.id) }}">Open report →</a></td>

@@ -190,11 +190,13 @@ class ClassGroupsTest(unittest.TestCase):
         self.assertEqual(len(rows), 2)
 
     def test_class_only_report_denominator(self):
-        start = datetime.now(timezone.utc) - timedelta(minutes=20)
+        start = datetime.now(timezone.utc) - timedelta(minutes=70)
         session_id = self.db.start_session("AI", start, 60, 30, 5, group_id=self.group())
         self.db.record_recognition_event(self.event(when=start + timedelta(minutes=1)))
+        self.db.record_recognition_event(self.event(when=start + timedelta(minutes=31)))
         detail = self.db.session_detail(session_id)
-        self.assertEqual(detail["completed_checkpoint_count"], 1)
+        self.assertEqual(detail["completed_checkpoint_count"], 2)
+        self.assertEqual(detail["completed_hour_count"], 1)
         self.assertEqual(detail["attendance_percentage"], 100.0)
         self.assertEqual(self.db.session_history()[0]["attendance_percentage"], 100.0)
         self.assertEqual(self.db.session_history()[0]["roster_count"], 1)

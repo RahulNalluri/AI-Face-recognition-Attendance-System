@@ -16,7 +16,7 @@ def attendance_position(attended: int, completed: int, minimum_percentage: float
     if completed == 0:
         return {
             "percentage": None, "status": "no-data", "needed": 0, "can_miss": 0,
-            "message": "No completed checkpoints yet. Attend the first scheduled check to build a safe record.",
+            "message": "No completed teaching hours yet. Attend the first scheduled hour to build a safe record.",
         }
 
     present, total = Decimal(attended), Decimal(completed)
@@ -26,7 +26,7 @@ def attendance_position(attended: int, completed: int, minimum_percentage: float
         needed = max(0, int(raw_needed.to_integral_value(rounding=ROUND_CEILING)))
         status, can_miss = "critical", 0
         message = (
-            f"Attend the next {needed} checkpoint{'s' if needed != 1 else ''} without missing "
+            f"Attend the next {needed} teaching hour{'s' if needed != 1 else ''} without missing "
             f"to reach {minimum_percentage:g}%."
         )
     else:
@@ -35,10 +35,10 @@ def attendance_position(attended: int, completed: int, minimum_percentage: float
         needed = 0
         status = "safe" if percentage >= min(100.0, minimum_percentage + 10) else "warning"
         message = (
-            f"You can miss {can_miss} upcoming checkpoint{'s' if can_miss != 1 else ''} "
+            f"You can miss {can_miss} upcoming teaching hour{'s' if can_miss != 1 else ''} "
             f"and remain at or above {minimum_percentage:g}%."
             if can_miss else
-            f"Attend the next checkpoint to stay at or above {minimum_percentage:g}%."
+            f"Attend the next teaching hour to stay at or above {minimum_percentage:g}%."
         )
     return {
         "percentage": percentage, "status": status, "needed": needed,
@@ -52,8 +52,7 @@ def build_shortage_plan(
     future_by_subject: dict[str, list[dict[str, Any]]] = {}
     for occurrence in upcoming:
         item = dict(occurrence)
-        interval = max(1, int(item["checkpoint_interval_minutes"]))
-        item["planned_checkpoints"] = ceil(int(item["duration_minutes"]) / interval)
+        item["planned_hours"] = int(item["duration_minutes"]) // 60
         future_by_subject.setdefault(item["title"].strip().casefold(), []).append(item)
 
     subjects = []
@@ -64,8 +63,11 @@ def build_shortage_plan(
         ))
         matches = future_by_subject.get(subject["title"].strip().casefold(), [])
         subject["next_class"] = matches[0] if matches else None
-        checks_per_class = matches[0]["planned_checkpoints"] if matches else 1
-        subject["estimated_classes"] = ceil(subject["needed"] / checks_per_class) if subject["needed"] else 0
+        hours_per_class = matches[0]["planned_hours"] if matches else 1
+        subject["estimated_classes"] = (
+            ceil(subject["needed"] / hours_per_class)
+            if subject["needed"] and hours_per_class else None
+        )
         subjects.append(subject)
     rank = {"critical": 0, "warning": 1, "safe": 2, "no-data": 3}
     subjects.sort(key=lambda item: (rank[item["status"]], item["percentage"] or 0, item["title"].casefold()))

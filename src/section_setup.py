@@ -8,7 +8,7 @@ from timetable import Timetable, timetable_timezone
 def default_grid(timezone_name="Asia/Kolkata"):
     return {"day_start": "09:30", "timezone": timezone_name, "enabled": False,
             "lunch_after": 3,
-            "periods": [{"duration": 60, "break_after": 60 if i == 2 else 0, "repeat": 0, "window": 10} for i in range(6)],
+            "periods": [{"duration": 60, "break_after": 60 if i == 2 else 0, "repeat": 20, "window": 10} for i in range(6)],
             "subjects": [[""] * 6 for _ in range(6)]}
 
 

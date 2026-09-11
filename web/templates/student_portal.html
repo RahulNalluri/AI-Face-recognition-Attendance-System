@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">Student dashboard</p>
     <h1>Welcome, {{ account.display_name }}</h1>
-    <p>{{ account.registration_number }} · Required attendance: {{ plan.minimum }}%. Calculated from completed checkpoints only.</p>
+    <p>{{ account.registration_number }} · Required attendance: {{ plan.minimum }}%. Calculated from completed teaching hours only.</p>
   </div>
 </div>
 
@@ -15,13 +15,13 @@
     <strong>{{ report.percentage|round(1) ~ '%' if report.percentage is not none else '—' }}</strong>
     <small>{{ plan.overall.message }}</small>
   </article>
-  <article><span>Present</span><strong>{{ report.attended }}</strong><small>Completed checkpoints</small></article>
-  <article><span>Missed</span><strong>{{ report.missed }}</strong><small>Completed checkpoints</small></article>
+  <article><span>Present</span><strong>{{ report.attended }}</strong><small>Teaching hours</small></article>
+  <article><span>Missed</span><strong>{{ report.missed }}</strong><small>Teaching hours</small></article>
   <article><span>Upcoming</span><strong>{{ upcoming|length }}</strong><small>Scheduled subjects</small></article>
 </section>
 
 <section class="panel">
-  <div class="panel-heading"><div><h2>Attendance shortage planner</h2><p>{{ plan.shortage_count }} subject{{ '' if plan.shortage_count == 1 else 's' }} below the {{ plan.minimum }}% requirement. Each class may contain multiple checkpoints.</p></div></div>
+  <div class="panel-heading"><div><h2>Attendance shortage planner</h2><p>{{ plan.shortage_count }} subject{{ '' if plan.shortage_count == 1 else 's' }} below the {{ plan.minimum }}% requirement. Two passed checkpoints are required for each hour.</p></div></div>
   {% if plan.subjects %}
     <div class="subject-grid">
       {% for subject in plan.subjects %}
@@ -30,7 +30,7 @@
         <div class="plan-score"><span class="risk-badge {{ subject.status }}">{{ subject.status|replace('-', ' ') }}</span><strong>{{ subject.percentage }}%</strong></div>
         <div class="progress"><span style="width: {{ [subject.percentage, 100]|min }}%"></span></div>
         <p class="plan-message">{{ subject.message }}</p>
-        <div class="plan-facts"><span><b>{{ subject.attended }}/{{ subject.completed }}</b> checks attended</span>{% if subject.needed %}<span><b>≈ {{ subject.estimated_classes }}</b> full class{{ '' if subject.estimated_classes == 1 else 'es' }}</span>{% else %}<span><b>{{ subject.can_miss }}</b> checks can be missed</span>{% endif %}</div>
+        <div class="plan-facts"><span><b>{{ subject.attended }}/{{ subject.completed }}</b> hours attended</span>{% if subject.needed %}<span><b>{% if subject.estimated_classes is not none %}≈ {{ subject.estimated_classes }}{% else %}—{% endif %}</b> full class{{ '' if subject.estimated_classes == 1 else 'es' }}</span>{% else %}<span><b>{{ subject.can_miss }}</b> hours can be missed</span>{% endif %}</div>
         {% if subject.next_class %}<small class="next-priority">Next: {{ subject.next_class.next_start|local_datetime }}</small>{% endif %}
       </article>
       {% endfor %}
@@ -44,20 +44,21 @@
     {% if upcoming %}
       <div class="upcoming-list">
         {% for item in upcoming %}
-        <article class="{{ 'priority-class' if item.attendance_plan and item.attendance_plan.status == 'critical' else '' }}"><div class="date-tile"><strong>{{ item.next_start|local_datetime }}</strong></div><div><h3>{{ item.title }}{% if item.attendance_plan and item.attendance_plan.status == 'critical' %} <span class="risk-badge critical">Priority</span>{% endif %}</h3><small>{{ item.group_name }} · {{ item.duration_minutes }} minutes{% if item.attendance_plan and item.attendance_plan.needed %} · {{ item.attendance_plan.needed }} checks needed{% endif %}</small></div></article>
+        <article class="{{ 'priority-class' if item.attendance_plan and item.attendance_plan.status == 'critical' else '' }}"><div class="date-tile"><strong>{{ item.next_start|local_datetime }}</strong></div><div><h3>{{ item.title }}{% if item.attendance_plan and item.attendance_plan.status == 'critical' %} <span class="risk-badge critical">Priority</span>{% endif %}</h3><small>{{ item.group_name }} · {{ item.duration_minutes }} minutes{% if item.attendance_plan and item.attendance_plan.needed %} · {{ item.attendance_plan.needed }} hours needed{% endif %}</small></div></article>
         {% endfor %}
       </div>
     {% else %}<div class="empty compact">No upcoming timetable classes are assigned to your section.</div>{% endif %}
   </div>
   <div class="panel">
-    <div class="panel-heading"><div><h2>Recent attendance</h2><p>Your latest completed checkpoint results.</p></div></div>
+    <div class="panel-heading"><div><h2>Recent attendance</h2><p>Your latest completed hourly decisions.</p></div></div>
     {% if report.recent %}
       <div class="recent-list">
         {% for item in report.recent %}
-        <article><span class="matrix-status {{ 'present' if item.is_present else 'absent' }}">{{ 'Present' if item.is_present else 'Absent' }}</span><div><h3>{{ item.title }} · Check {{ item.checkpoint_number }}</h3><small>{{ item.closes_at|local_datetime }}{% if item.override_status %} · Faculty corrected{% endif %}</small></div></article>
+        <article><span class="matrix-status {{ 'present' if item.is_present else 'absent' }}">{{ 'Present' if item.is_present else 'Absent' }}</span><div><h3>{{ item.title }} · Hour {{ item.hour_number }}</h3><small>{{ item.starts_at|local_datetime }} · {{ item.passed_checkpoints }}/{{ item.checkpoint_count }} checkpoints passed</small></div></article>
         {% endfor %}
       </div>
-    {% else %}<div class="empty compact">Your attendance history will appear after a checkpoint closes.</div>{% endif %}
+    {% else %}<div class="empty compact">Your attendance history will appear after a configured teaching hour completes.</div>{% endif %}
   </div>
 </section>
+{% if report.configuration_issues %}<div class="flash error">{{ report.configuration_issues }} completed hour{{ '' if report.configuration_issues == 1 else 's' }} could not be evaluated because fewer than two checkpoints were scheduled. Ask faculty to use Repeat after 30 minutes or less.</div>{% endif %}
 {% endblock %}

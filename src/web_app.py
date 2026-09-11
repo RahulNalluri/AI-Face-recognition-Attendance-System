@@ -596,8 +596,8 @@ def create_app(
             return redirect(url_for("edit_class_group", group_id=managed_group, _anchor="weekly-grid"))
         entry = timetable.entry(entry_id) if entry_id is not None else {
             "id": None, "group_id": request.args.get("group_id", type=int), "title": "",
-            "weekday": 0, "start_time": "09:30", "duration_minutes": 130,
-            "checkpoint_interval_minutes": 65, "checkpoint_window_minutes": 10,
+            "weekday": 0, "start_time": "09:30", "duration_minutes": 60,
+            "checkpoint_interval_minutes": 20, "checkpoint_window_minutes": 10,
             "timezone": app.config["APP_TIMEZONE"], "enabled": True,
         }
         if entry is None:
@@ -750,18 +750,18 @@ def create_app(
         writer = csv.writer(output)
         writer.writerow(
             ["Identity", "Name"]
-            + [f"Checkpoint {item['checkpoint_number']}" for item in detail["checkpoints"]]
-            + ["Attended", "Completed checkpoints", "Attendance percentage", "Class group"]
+            + [f"Hour {item['hour_number']}" for item in detail["hours"]]
+            + ["Hours attended", "Completed hours", "Attendance percentage", "Class group"]
         )
         for student in detail["roster"]:
             writer.writerow(
                 [student["identity_label_snapshot"], student["display_name_snapshot"]]
                 + [
-                    cell["status"] + (" (manual)" if cell["override"] else "")
-                    for cell in student["cells"]
+                    f"{cell['status']} ({cell['passed_checkpoints']}/{cell['checkpoint_count']} checkpoints)"
+                    for cell in student["hour_cells"]
                 ]
                 + [
-                    student["attended_count"], detail["completed_checkpoint_count"],
+                    student["attended_count"], detail["completed_hour_count"],
                     "" if student["attendance_percentage"] is None else student["attendance_percentage"],
                     # Prevent a class name from being interpreted as a spreadsheet formula.
                     "'" + detail["session"]["group_name_snapshot"]

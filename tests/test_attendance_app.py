@@ -199,7 +199,7 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertIn(b"present", detail.data)
         exported = self.client.get(f"/sessions/{self.session_id}/export.csv")
         self.assertEqual(exported.status_code, 200)
-        self.assertIn(b"Checkpoint 1", exported.data)
+        self.assertIn(b"Hours attended", exported.data)
         self.assertIn(b"student_one", exported.data)
         self.assertIn(b"student_two", exported.data)
 
@@ -210,7 +210,8 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertEqual(marked.get_json()["outcome"], "marked")
         detail = self.database.session_detail(session_id)
         self.assertEqual(detail["completed_checkpoint_count"], 3)
-        self.assertEqual(detail["attendance_percentage"], 16.7)
+        self.assertIsNone(detail["attendance_percentage"])
+        self.assertEqual(detail["completed_hour_count"], 0)
         first = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_one")
         second = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_two")
         self.assertEqual([cell["status"] for cell in first["cells"]], ["present", "absent", "absent"])
@@ -243,10 +244,8 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertEqual(student["cells"][0]["automatic_status"], "present")
         self.assertIsNotNone(student["cells"][0]["record"])
         self.assertEqual(detail["audit"][0]["reason"], "Approved medical leave")
-        exported = self.client.get(f"/sessions/{session_id}/export.csv")
-        self.assertIn(b"absent (manual)", exported.data)
         history_item = next(row for row in self.database.session_history() if row["id"] == session_id)
-        self.assertEqual(history_item["attendance_percentage"], 0.0)
+        self.assertIsNone(history_item["attendance_percentage"])
 
         restored = self.client.post(
             f"/sessions/{session_id}/attendance/adjust",
@@ -263,6 +262,23 @@ class AttendanceMonitorTest(unittest.TestCase):
         self.assertEqual(student["cells"][0]["status"], "present")
         self.assertIsNone(student["cells"][0]["override"])
         self.assertEqual(len(detail["audit"]), 2)
+
+    def test_two_effective_checkpoints_mark_one_hour_present(self) -> None:
+        start = datetime.now(timezone.utc) - timedelta(minutes=70)
+        session_id = self.database.start_session("Hourly decision", start, 60, 20, 5)
+        self.assertEqual(self.post_event(self.event(start + timedelta(minutes=1))).status_code, 200)
+        detail = self.database.session_detail(session_id)
+        student = next(row for row in detail["roster"] if row["identity_label_snapshot"] == "student_one")
+        self.assertEqual(student["hour_cells"][0]["status"], "absent")
+        self.assertEqual(student["hour_cells"][0]["passed_checkpoints"], 1)
+        self.database.adjust_attendance(
+            session_id, detail["checkpoints"][1]["id"], student["student_id"],
+            "present", "Faculty verified presence",
+        )
+        corrected = self.database.session_detail(session_id)
+        student = next(row for row in corrected["roster"] if row["identity_label_snapshot"] == "student_one")
+        self.assertEqual(student["hour_cells"][0]["status"], "present")
+        self.assertEqual(student["attendance_percentage"], 100.0)
 
     def test_open_checkpoint_cannot_be_manually_corrected(self) -> None:
         detail = self.database.session_detail(self.session_id)

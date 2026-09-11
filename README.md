@@ -50,9 +50,10 @@ recognition event is emitted.
 ### Scheduled attendance and live monitoring dashboard
 
 Trusted camera events are sent to a local Flask API and stored in SQLite. A
-class can contain multiple attendance checkpoints—for example, a 130-minute
-class starting at 9:30 with a 65-minute interval creates checks at 9:30 and
-10:35. A student can be marked only once per checkpoint. The login-free local
+class contains multiple recognition checkpoints. A 60-minute class starting at
+9:30 with a 20-minute interval creates checks at 9:30, 9:50, and 10:10. A student
+can be marked only once per checkpoint. At least two passed checkpoints mark that
+completed teaching hour Present; zero or one marks it Absent. The local
 dashboard displays the camera preview, recognized model identities, checkpoint
 counts, and recognition results as they arrive. Camera preview frames remain in
 memory and are not written to disk.
@@ -63,10 +64,10 @@ All users sign in at `http://127.0.0.1:5000/login` and choose Admin, Faculty, or
 Student. Admin and faculty accounts have the same operator permissions in the
 current version. Students are redirected to a private portal that shows only the
 signed-in student's overall attendance, subject-wise percentages,
-present and missed checkpoint totals, recent effective results, and upcoming
-classes from the student's assigned section timetable. Only completed checkpoint
-windows are included in percentages, and faculty corrections replace the
-automatic result in the calculation.
+present and missed teaching-hour totals, recent hourly results, and upcoming
+classes from the student's assigned section timetable. Only completed 60-minute
+blocks with at least two scheduled checkpoints are included in percentages, and
+faculty checkpoint corrections automatically recalculate the hourly result.
 
 For the current local prototype, running `python src/web_app.py` creates `admin`,
 `faculty`, and Rahul's `student` demo logins once. Rahul's login is created when
@@ -78,13 +79,13 @@ and account administration are still required before college-network deployment.
 After a password change, the obsolete demo credential file is removed; the user
 must remember the new password.
 
-The student dashboard includes a checkpoint-aware attendance shortage planner.
+The student dashboard includes an hourly attendance shortage planner.
 For each subject it classifies attendance as **Critical** (below the required
 percentage), **Warning** (within ten percentage points above it), or **Safe**.
-It calculates how many consecutive checkpoints must be attended to recover, or
-how many can still be missed without falling below the requirement. Because one
-long class can contain multiple checkpoints, the planner also estimates the
-number of full classes needed and highlights the next matching timetable class.
+It calculates how many consecutive teaching hours must be attended to recover,
+or how many can still be missed without falling below the requirement. It also
+estimates the number of full classes needed and highlights the next matching
+timetable class.
 Admin and faculty users can change the required percentage from the attendance
 policy panel on the main dashboard; the value is stored in the private database.
 
@@ -222,17 +223,17 @@ which is excluded from Git.
 Use the **Start attendance session** form on the dashboard and set:
 
 - class start and duration;
-- checkpoint interval (65 minutes by default);
+- checkpoint interval (20 minutes by default);
 - checkpoint window (10 minutes by default).
 
-For a class beginning at 9:30, the defaults produce the next checkpoint at
-10:35. Recognition outside an open window is audited but does not mark the
-student present.
+For a class beginning at 9:30, the defaults produce checkpoints at 9:30, 9:50,
+and 10:10 during its first hour. Recognition outside an open window is audited
+but does not provide evidence for the hourly decision.
 
 For a quick live test, click **Use 8-minute test preset** before starting the
-session. It creates checkpoints at minute 0, 3, and 6, with each checkpoint
-open for 2 minutes. The one-minute gaps make it easy to confirm that recognition
-is recorded once during each open window and is only audited between windows.
+session. It creates checkpoints at minute 0, 3, and 6, with each checkpoint open
+for 2 minutes. This short preset tests checkpoint recording only; because it does
+not complete a 60-minute block, it does not produce an hourly attendance result.
 
 The same repeated-checkpoint workflow can be verified without a webcam and
 without modifying the private application database:
@@ -246,9 +247,9 @@ first mark, duplicate rejection, closed-window rejection, second mark, and
 second duplicate rejection.
 
 Open **Session history** to view retained sessions. Each report includes the
-saved roster, checkpoint windows, present/absent/open/upcoming status, per-person
-and overall percentages, and a checkpoint-wise CSV export. A person becomes
-absent only after that checkpoint window closes.
+saved roster, checkpoint evidence, hourly Present/Absent decisions, per-person
+and overall percentages, and an hourly CSV export. An hour becomes Absent only
+after the full block and its checkpoint windows finish.
 
 ### Class groups and student rosters
 
@@ -268,9 +269,10 @@ start and 60-minute periods, lunch is 12:30–13:30 and Period 4 starts at 13:30
 Existing saved grids keep their timings: choose the lunch position and save the
 section to apply it. Fill Monday–Saturday subject cells; leave free periods blank.
 
-For period attendance, **Repeat after = 0** means a single check at the start;
-use a positive interval for repeated checks during a long lab. **Open for** sets
-the attendance window and must fit inside that interval or period duration.
+For hourly attendance, use **Repeat after = 20** (recommended) or any value no
+greater than 30 minutes. **Open for** sets each checkpoint window and must fit
+inside the interval. Legacy periods with fewer than two scheduled checkpoints
+per hour are flagged and excluded rather than marking every student absent.
 Enable the grid when ready and click **Save section and timetable**. Section
 details, the roster, and all grid entries are saved together or not at all.
 
@@ -306,9 +308,9 @@ The section form is the primary weekly-grid editor. For extra individual slots,
 open **Timetable → Add timetable entry** and select a class group, subject,
 weekday, and start time. Set duration, **Repeat after**, and **Open for**, then
 save with **Enable automatic weekly sessions** checked. Add a separate entry for
-each weekday/subject. For example, Monday at 09:30 with duration 130, repeat 65,
-and open 10 creates attendance windows at 09:30–09:40 and 10:35–10:45, ending
-the session at 11:40. The same entry repeats the following Monday.
+each weekday/subject. For example, Monday at 09:30 with duration 60, repeat 20,
+and open 10 creates attendance windows at 09:30–09:40, 09:50–10:00, and
+10:10–10:20. Passing any two marks the 09:30–10:30 hour Present.
 
 Under **Camera section** on the dashboard or timetable page, select the section
 this camera monitors and click **Assign camera section**. Different sections may
@@ -365,8 +367,9 @@ Corrections never overwrite face-recognition evidence. The original timestamp,
 similarity, and liveness-backed attendance row remain stored, while the effective
 status is maintained separately. Every correction and restoration records the
 previous status, new status, reason, time, and operator in the session's audit
-trail. Reports, percentages, checkpoint totals, and CSV exports use the effective
-status; manually corrected CSV cells are labelled `(manual)`.
+trail. Hourly reports and CSV exports use the effective checkpoint evidence and
+recalculate Present when at least two checks pass. Percentages and shortage
+planning count completed teaching hours, not individual checkpoints.
 
 ### 9. Start recognition from the dashboard
 

@@ -24,7 +24,7 @@ function drawGrid() {
     const row = gridCell('tr'); row.append(gridCell('th', `Period ${index + 1}`));
     for (const [key, label, min] of [['duration', 'Duration', 1], ['break_after', 'Break after', 0], ['repeat', 'Repeat after', 0], ['window', 'Open for', 1]]) {
       const cell = gridCell('td'), input = document.createElement('input');
-      input.type = 'number'; input.min = min; input.max = 1440; input.required = true;
+      input.type = 'number'; input.min = key === 'repeat' && period.duration >= 60 ? 1 : min; input.max = key === 'repeat' && period.duration >= 60 ? 30 : 1440; input.required = true;
       input.value = period[key]; input.setAttribute('aria-label', `Period ${index + 1} ${label}`);
       if (isLunch && key === 'break_after') { input.disabled = true; input.title = 'Lunch break: fixed at 60 minutes'; }
       input.addEventListener('input', () => {
@@ -85,7 +85,7 @@ countField.addEventListener('change', () => {
       !window.confirm('Remove the subjects in the last periods from this draft? Existing attendance history will remain.')) {
     countField.value = oldCount; return;
   }
-  while (sectionGrid.periods.length < count) sectionGrid.periods.push({duration: 60, break_after: 0, repeat: 0, window: 10});
+  while (sectionGrid.periods.length < count) sectionGrid.periods.push({duration: 60, break_after: 0, repeat: 20, window: 10});
   sectionGrid.periods.length = count;
   if (sectionGrid.lunch_after > count) sectionGrid.lunch_after = count;
   sectionGrid.subjects = sectionGrid.subjects.map(row => Array.from({length: count}, (_, i) => row[i] || ''));
