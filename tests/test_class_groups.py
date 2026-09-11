@@ -18,6 +18,7 @@ class ClassGroupsTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.app = create_app(Path(self.temporary.name) / "test.db", labels_path=None)
+        self.app.config.update(TESTING=True, AUTH_REQUIRED=False)
         self.app.config.update(TESTING=True, DEVICE_TOKEN="test-camera")
         self.client = self.app.test_client()
         self.db = self.app.extensions["attendance_database"]

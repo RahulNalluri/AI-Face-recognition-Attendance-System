@@ -1,0 +1,61 @@
+{% extends "student_base.html" %}
+{% block title %}My attendance · AttendAI{% endblock %}
+{% block content %}
+<div class="page-heading student-welcome">
+  <div>
+    <p class="eyebrow">Student dashboard</p>
+    <h1>Welcome, {{ account.display_name }}</h1>
+    <p>{{ account.registration_number }} · Attendance is calculated from completed checkpoints only.</p>
+  </div>
+</div>
+
+<section class="student-summary">
+  <article class="percentage-card {{ 'needs-attention' if report.percentage is not none and report.percentage < 75 else '' }}">
+    <span>Overall attendance</span>
+    <strong>{{ report.percentage|round(1) ~ '%' if report.percentage is not none else '—' }}</strong>
+    <small>{{ report.attended }} present out of {{ report.completed }} completed checks</small>
+  </article>
+  <article><span>Present</span><strong>{{ report.attended }}</strong><small>Completed checkpoints</small></article>
+  <article><span>Missed</span><strong>{{ report.missed }}</strong><small>Completed checkpoints</small></article>
+  <article><span>Upcoming</span><strong>{{ upcoming|length }}</strong><small>Scheduled subjects</small></article>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Subject-wise attendance</h2><p>See which subjects may need more attention.</p></div></div>
+  {% if report.subjects %}
+    <div class="subject-grid">
+      {% for subject in report.subjects %}
+      <article class="subject-card">
+        <div><h3>{{ subject.title }}</h3><small>{{ subject.class_names or 'General session' }}</small></div>
+        <strong class="{{ 'low-attendance' if subject.percentage < 75 else 'good-attendance' }}">{{ subject.percentage }}%</strong>
+        <div class="progress"><span style="width: {{ [subject.percentage, 100]|min }}%"></span></div>
+        <small>{{ subject.attended }} of {{ subject.completed }} completed checks present{% if subject.percentage < 75 %} · attendance needs attention{% endif %}</small>
+      </article>
+      {% endfor %}
+    </div>
+  {% else %}<div class="empty">No completed attendance checkpoints are available yet.</div>{% endif %}
+</section>
+
+<section class="portal-grid">
+  <div class="panel">
+    <div class="panel-heading"><div><h2>Classes to attend</h2><p>Your next enabled timetable occurrences.</p></div></div>
+    {% if upcoming %}
+      <div class="upcoming-list">
+        {% for item in upcoming %}
+        <article><div class="date-tile"><strong>{{ item.next_start|local_datetime }}</strong></div><div><h3>{{ item.title }}</h3><small>{{ item.group_name }} · {{ item.duration_minutes }} minutes</small></div></article>
+        {% endfor %}
+      </div>
+    {% else %}<div class="empty compact">No upcoming timetable classes are assigned to your section.</div>{% endif %}
+  </div>
+  <div class="panel">
+    <div class="panel-heading"><div><h2>Recent attendance</h2><p>Your latest completed checkpoint results.</p></div></div>
+    {% if report.recent %}
+      <div class="recent-list">
+        {% for item in report.recent %}
+        <article><span class="matrix-status {{ 'present' if item.is_present else 'absent' }}">{{ 'Present' if item.is_present else 'Absent' }}</span><div><h3>{{ item.title }} · Check {{ item.checkpoint_number }}</h3><small>{{ item.closes_at|local_datetime }}{% if item.override_status %} · Faculty corrected{% endif %}</small></div></article>
+        {% endfor %}
+      </div>
+    {% else %}<div class="empty compact">Your attendance history will appear after a checkpoint closes.</div>{% endif %}
+  </div>
+</section>
+{% endblock %}

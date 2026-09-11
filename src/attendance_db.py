@@ -23,6 +23,24 @@ CREATE TABLE IF NOT EXISTS students (
  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
  created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS student_accounts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ student_id INTEGER NOT NULL UNIQUE,
+ username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+ password_hash TEXT NOT NULL,
+ enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT,
+ FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS staff_accounts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+ display_name TEXT NOT NULL,
+ role TEXT NOT NULL CHECK (role IN ('admin','faculty')),
+ password_hash TEXT NOT NULL,
+ enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT
+);
 CREATE TABLE IF NOT EXISTS monitor_sessions (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  title TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
@@ -198,6 +216,171 @@ class AttendanceDatabase:
     def students(self) -> list[sqlite3.Row]:
         with self.session() as connection:
             return connection.execute("SELECT * FROM students WHERE active=1 ORDER BY display_name").fetchall()
+
+    def student_by_identity(self, identity_label: str) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM students WHERE identity_label=? COLLATE NOCASE AND active=1",
+                (identity_label.strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def student_account_by_username(self, username: str) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """SELECT a.*,s.identity_label,s.display_name,s.registration_number,s.active
+                FROM student_accounts a JOIN students s ON s.id=a.student_id
+                WHERE a.username=? COLLATE NOCASE""", (username.strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def student_account(self, account_id: int) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """SELECT a.*,s.identity_label,s.display_name,s.registration_number,s.active
+                FROM student_accounts a JOIN students s ON s.id=a.student_id
+                WHERE a.id=? AND a.enabled=1 AND s.active=1""", (account_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_student_account(self, student_id: int, username: str, password_hash: str) -> int:
+        username = username.strip().lower()
+        if not username or len(username) > 80:
+            raise ValueError("Username must contain 1 to 80 characters")
+        now = datetime_text(utc_now())
+        with self.session() as connection:
+            if not connection.execute(
+                "SELECT id FROM students WHERE id=? AND active=1", (student_id,)
+            ).fetchone():
+                raise ValueError("Choose an active student")
+            cursor = connection.execute(
+                """INSERT INTO student_accounts(student_id,username,password_hash,created_at,updated_at)
+                VALUES (?,?,?,?,?)""", (student_id, username, password_hash, now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def record_student_login(self, account_id: int) -> None:
+        with self.session() as connection:
+            connection.execute(
+                "UPDATE student_accounts SET last_login_at=? WHERE id=?",
+                (datetime_text(utc_now()), account_id),
+            )
+
+    def update_student_password(self, account_id: int, password_hash: str) -> None:
+        with self.session() as connection:
+            cursor = connection.execute(
+                "UPDATE student_accounts SET password_hash=?,updated_at=? WHERE id=? AND enabled=1",
+                (password_hash, datetime_text(utc_now()), account_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Student account is unavailable")
+
+    def staff_account_by_username(self, username: str) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM staff_accounts WHERE username=? COLLATE NOCASE", (username.strip(),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def staff_account(self, account_id: int) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM staff_accounts WHERE id=? AND enabled=1", (account_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_staff_account(
+        self, username: str, display_name: str, role: str, password_hash: str,
+    ) -> int:
+        username, display_name, role = username.strip().lower(), display_name.strip(), role.strip().lower()
+        if not username or len(username) > 80 or not display_name or len(display_name) > 100:
+            raise ValueError("Username and display name are required")
+        if role not in {"admin", "faculty"}:
+            raise ValueError("Staff role must be admin or faculty")
+        now = datetime_text(utc_now())
+        with self.session() as connection:
+            cursor = connection.execute(
+                """INSERT INTO staff_accounts(
+                username,display_name,role,password_hash,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?)""", (username, display_name, role, password_hash, now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def record_staff_login(self, account_id: int) -> None:
+        with self.session() as connection:
+            connection.execute(
+                "UPDATE staff_accounts SET last_login_at=? WHERE id=?",
+                (datetime_text(utc_now()), account_id),
+            )
+
+    def update_staff_password(self, account_id: int, password_hash: str) -> None:
+        with self.session() as connection:
+            cursor = connection.execute(
+                "UPDATE staff_accounts SET password_hash=?,updated_at=? WHERE id=? AND enabled=1",
+                (password_hash, datetime_text(utc_now()), account_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Staff account is unavailable")
+
+    def student_group_ids(self, student_id: int) -> set[int]:
+        with self.session() as connection:
+            return {int(row[0]) for row in connection.execute(
+                "SELECT group_id FROM class_group_members WHERE student_id=?", (student_id,)
+            )}
+
+    def student_portal_data(self, student_id: int, now: datetime | None = None) -> dict[str, Any]:
+        """Return private, effective attendance totals for one student only."""
+        current = datetime_text(ensure_aware(now or utc_now()))
+        with self.session() as connection:
+            student = connection.execute(
+                "SELECT * FROM students WHERE id=? AND active=1", (student_id,)
+            ).fetchone()
+            if not student:
+                raise ValueError("Student is unavailable")
+            rows = [dict(row) for row in connection.execute(
+                """SELECT ms.id session_id,ms.title,ms.starts_at,ms.ends_at,
+                cg.group_name_snapshot class_name,c.id checkpoint_id,c.checkpoint_number,
+                c.opens_at,c.closes_at,a.recognized_at,a.similarity,
+                o.override_status,o.reason override_reason,
+                CASE
+                  WHEN o.override_status='present' THEN 1
+                  WHEN o.override_status='absent' THEN 0
+                  WHEN a.id IS NOT NULL THEN 1 ELSE 0
+                END is_present
+                FROM session_roster r
+                JOIN monitor_sessions ms ON ms.id=r.session_id
+                JOIN monitor_checkpoints c ON c.session_id=ms.id
+                LEFT JOIN session_class_groups cg ON cg.session_id=ms.id
+                LEFT JOIN monitor_attendance a ON a.checkpoint_id=c.id AND a.student_id=r.student_id
+                LEFT JOIN attendance_overrides o ON o.checkpoint_id=c.id AND o.student_id=r.student_id
+                WHERE r.student_id=? AND c.closes_at<=?
+                ORDER BY c.closes_at DESC,c.id DESC""", (student_id, current),
+            )]
+
+        subjects: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = row["title"].strip().casefold()
+            subject = subjects.setdefault(key, {
+                "title": row["title"], "attended": 0, "completed": 0,
+                "percentage": None, "class_names": set(),
+            })
+            subject["completed"] += 1
+            subject["attended"] += int(row["is_present"])
+            if row["class_name"]:
+                subject["class_names"].add(row["class_name"])
+        for subject in subjects.values():
+            subject["percentage"] = round(subject["attended"] * 100 / subject["completed"], 1)
+            subject["class_names"] = ", ".join(sorted(subject["class_names"]))
+
+        attended = sum(int(row["is_present"]) for row in rows)
+        completed = len(rows)
+        return {
+            "student": dict(student), "attended": attended, "completed": completed,
+            "missed": completed - attended,
+            "percentage": round(attended * 100 / completed, 1) if completed else None,
+            "subjects": sorted(subjects.values(), key=lambda item: item["title"].casefold()),
+            "recent": rows[:20],
+        }
 
     def class_groups(self) -> list[dict[str, Any]]:
         with self.session() as connection:

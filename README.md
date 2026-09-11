@@ -4,8 +4,8 @@ This project develops an automated attendance system that identifies
 registered students from a live camera and records attendance only after
 identity confirmation and active liveness verification. It combines face
 preprocessing, controlled data augmentation, neural-network recognition,
-unknown-person rejection, scheduled attendance checkpoints, and a live local
-monitoring dashboard.
+unknown-person rejection, scheduled attendance checkpoints, a live local
+monitoring dashboard, and a private student attendance portal.
 
 ## Project objectives
 
@@ -56,6 +56,27 @@ class starting at 9:30 with a 65-minute interval creates checks at 9:30 and
 dashboard displays the camera preview, recognized model identities, checkpoint
 counts, and recognition results as they arrive. Camera preview frames remain in
 memory and are not written to disk.
+
+### Student attendance portal
+
+All users sign in at `http://127.0.0.1:5000/login` and choose Admin, Faculty, or
+Student. Admin and faculty accounts have the same operator permissions in the
+current version. Students are redirected to a private portal that shows only the
+signed-in student's overall attendance, subject-wise percentages,
+present and missed checkpoint totals, recent effective results, and upcoming
+classes from the student's assigned section timetable. Only completed checkpoint
+windows are included in percentages, and faculty corrections replace the
+automatic result in the calculation.
+
+For the current local prototype, running `python src/web_app.py` creates `admin`,
+`faculty`, and Rahul's `student` demo logins once. Rahul's login is created when
+the `Rahul` recognition identity exists. Random passwords are written to the
+corresponding `instance/*_demo_credentials.txt` files; SQLite stores only their
+password hashes. These private files remain excluded from Git. Every signed-in
+user can change their password from the header. HTTPS, persistent rate limiting,
+and account administration are still required before college-network deployment.
+After a password change, the obsolete demo credential file is removed; the user
+must remember the new password.
 
 ## CNN architecture
 
@@ -265,8 +286,9 @@ it starts with every active identity and can add newly recognized identities to
 that session. This option requires the camera assignment to be **None — manual
 sessions only**. Choose a named class when membership must be enforced. Group data
 is stored in the private local database, not in Git. Existing databases are
-upgraded automatically without removing attendance records. This remains a
-login-free local operator interface, not a multi-user access-control system.
+upgraded automatically without removing attendance records. Operator routes
+require an admin or faculty account. Student portal routes require a student
+account and expose only that account's attendance records.
 
 ### Reusable weekly timetable
 
@@ -432,7 +454,8 @@ real-world accuracy.
 
 - Passive anti-spoofing in addition to the current active liveness challenge.
 - Semester date ranges, holiday exceptions, and multi-camera timetables.
-- Attendance percentages, shortage alerts, and downloadable reports.
+- Configurable shortage alerts and student-downloadable attendance reports.
+- Account creation, password-reset administration, and account recovery.
 - PostgreSQL, HTTPS, and deployment hardening for multi-device operation.
 - Consent, encryption, biometric-data retention, and deletion controls.
 

@@ -72,7 +72,7 @@ class AttendanceMonitorTest(unittest.TestCase):
             self.database_path, camera_manager=self.camera, labels_path=self.labels_path,
             validation_report_path=self.validation_report_path,
         )
-        self.app.config.update(TESTING=True, DEVICE_TOKEN="camera-test-token")
+        self.app.config.update(TESTING=True, DEVICE_TOKEN="camera-test-token", AUTH_REQUIRED=False)
         self.client = self.app.test_client()
         self.start = datetime.now(timezone.utc) - timedelta(minutes=1)
         self.session_id = self.database.start_session("Artificial Intelligence", self.start, 130, 65, 10)

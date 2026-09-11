@@ -16,6 +16,7 @@ class SectionSetupTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.app = create_app(Path(self.temp.name) / "test.db", labels_path=None)
+        self.app.config.update(TESTING=True, AUTH_REQUIRED=False)
         self.app.config.update(TESTING=True)
         self.db = self.app.extensions["attendance_database"]
         self.table = self.app.extensions["timetable"]

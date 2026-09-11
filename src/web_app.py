@@ -21,6 +21,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from attendance_db import AttendanceDatabase, DEFAULT_DATABASE
 from timetable import Timetable, TimetableScheduler, WEEKDAYS
@@ -228,11 +229,43 @@ def model_labels(path: Path | str | None) -> list[str]:
     return [str(value) for value in values]
 
 
+def ensure_demo_logins(database: AttendanceDatabase, credentials_directory: Path) -> list[Path]:
+    """Create local admin, faculty and Rahul accounts once with private credentials."""
+    credentials_directory.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+
+    def write_credentials(filename: str, role: str, username: str, password: str) -> None:
+        path = credentials_directory / filename
+        path.write_text(
+            f"role={role}\nusername={username}\npassword={password}\n", encoding="utf-8"
+        )
+        created.append(path)
+
+    for role, username, name in (
+        ("admin", "admin", "System Administrator"),
+        ("faculty", "faculty", "Faculty User"),
+    ):
+        if database.staff_account_by_username(username) is None:
+            password = secrets.token_urlsafe(12)
+            database.save_staff_account(username, name, role, generate_password_hash(password))
+            write_credentials(f"{role}_demo_credentials.txt", role, username, password)
+
+    if database.student_account_by_username("rahul") is None:
+        student = database.student_by_identity("rahul")
+        if student is not None:
+            password = secrets.token_urlsafe(12)
+            database.save_student_account(student["id"], "rahul", generate_password_hash(password))
+            write_credentials("student_demo_credentials.txt", "student", "rahul", password)
+    return created
+
+
 def create_app(
     database_path: Path | str | None = None,
     camera_manager: CameraProcessManager | None = None,
     labels_path: Path | str | None = DEFAULT_LABELS_PATH,
     validation_report_path: Path | str | None = DEFAULT_VALIDATION_REPORT,
+    enable_demo_logins: bool = False,
+    demo_credentials_path: Path | str | None = None,
 ) -> Flask:
     app = Flask(__name__, template_folder=str(WEB_ROOT / "templates"), static_folder=str(WEB_ROOT / "static"))
     app.config.update(
@@ -244,11 +277,20 @@ def create_app(
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
+        AUTH_REQUIRED=True,
+    )
+    app.config["DEMO_CREDENTIAL_DIRECTORY"] = str(
+        Path(demo_credentials_path) if demo_credentials_path
+        else Path(app.config["DATABASE_PATH"]).parent
     )
     database = AttendanceDatabase(app.config["DATABASE_PATH"])
     database.initialize()
     database.sync_identities(model_labels(labels_path))
     database.backfill_missing_rosters()
+    if enable_demo_logins:
+        credential_directory = Path(demo_credentials_path or INSTANCE_ROOT)
+        for credential_file in ensure_demo_logins(database, credential_directory):
+            print(f"Demo login created. Credentials saved to {credential_file}")
     app.extensions["attendance_database"] = database
     timetable = Timetable(database)
     sections = SectionSetup(database)
@@ -261,6 +303,8 @@ def create_app(
     app.extensions["latest_camera_frame"] = frames
     if camera_manager is None:
         atexit.register(camera.stop)
+    failed_logins: dict[str, deque[float]] = {}
+    login_lock = threading.Lock()
 
     def camera_status() -> dict:
         process_status = dict(camera.status())
@@ -289,6 +333,20 @@ def create_app(
         if not supplied or not hmac.compare_digest(supplied, app.config["DEVICE_TOKEN"]):
             abort(401)
 
+    def current_user() -> dict | None:
+        account_id, role = session.get("account_id"), session.get("user_role")
+        if not isinstance(account_id, int) or role not in {"admin", "faculty", "student"}:
+            return None
+        account = (
+            database.student_account(account_id) if role == "student"
+            else database.staff_account(account_id)
+        )
+        if account is None or (role != "student" and account["role"] != role):
+            return None
+        account = dict(account)
+        account["role"] = role
+        return account
+
     @app.before_request
     def protect_forms() -> None:
         if request.method == "POST" and not request.path.startswith("/api/"):
@@ -297,10 +355,37 @@ def create_app(
             if not supplied or not expected or not hmac.compare_digest(supplied, expected):
                 abort(400, "Invalid or missing CSRF token")
 
+    @app.before_request
+    def protect_pages() -> None:
+        if not app.config["AUTH_REQUIRED"]:
+            return None
+        endpoint = request.endpoint or ""
+        if endpoint in {"login", "legacy_student_login", "static", "health"}:
+            return None
+        if endpoint in {"camera_event"} or (endpoint == "camera_frame" and request.method == "POST"):
+            return None
+        user = current_user()
+        if user is None:
+            session.pop("account_id", None)
+            session.pop("user_role", None)
+            if request.path.startswith("/api/"):
+                abort(401)
+            return redirect(url_for("login"))
+        if endpoint in {"logout", "legacy_student_logout", "change_password"}:
+            return None
+        if endpoint == "student_portal":
+            if user["role"] != "student":
+                return redirect(url_for("dashboard"))
+            return None
+        if user["role"] == "student":
+            return redirect(url_for("student_portal"))
+        return None
+
     @app.context_processor
     def context() -> dict:
         return {"csrf_token": session.setdefault("csrf_token", secrets.token_urlsafe(24)),
-                "camera_section": timetable.camera_section()}
+                "camera_section": timetable.camera_section(),
+                "current_user": current_user()}
 
     @app.template_filter("local_datetime")
     def local_datetime(value: str) -> str:
@@ -308,6 +393,115 @@ def create_app(
             return "—"
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed.astimezone(configured_timezone(app.config["APP_TIMEZONE"])).strftime("%d %b %Y, %I:%M:%S %p")
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        signed_in = current_user()
+        if signed_in is not None:
+            return redirect(url_for("student_portal" if signed_in["role"] == "student" else "dashboard"))
+        if request.method == "POST":
+            role = request.form.get("role", "").strip().lower()
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "")
+            key = f"{request.remote_addr or 'local'}:{role}:{username.casefold()}"
+            now_tick = time.monotonic()
+            with login_lock:
+                attempts = failed_logins.setdefault(key, deque())
+                while attempts and now_tick - attempts[0] > 300:
+                    attempts.popleft()
+                limited = len(attempts) >= 5
+            account = None
+            if not limited and role == "student":
+                account = database.student_account_by_username(username)
+            elif not limited and role in {"admin", "faculty"}:
+                candidate = database.staff_account_by_username(username)
+                account = candidate if candidate and candidate["role"] == role else None
+            valid = bool(
+                account and account["enabled"] and (role != "student" or account["active"])
+                and check_password_hash(account["password_hash"], password)
+            )
+            if not valid:
+                with login_lock:
+                    if not limited:
+                        failed_logins[key].append(now_tick)
+                message = (
+                    "Too many attempts. Please wait five minutes and try again."
+                    if limited else "Invalid username or password."
+                )
+                return render_template(
+                    "login.html", error=message, username=username, selected_role=role,
+                ), 429 if limited else 401
+            with login_lock:
+                failed_logins.pop(key, None)
+            csrf_token = session.get("csrf_token") or secrets.token_urlsafe(24)
+            session.clear()
+            session["csrf_token"] = csrf_token
+            session["account_id"] = int(account["id"])
+            session["user_role"] = role
+            if role == "student":
+                database.record_student_login(int(account["id"]))
+            else:
+                database.record_staff_login(int(account["id"]))
+            return redirect(url_for("student_portal" if role == "student" else "dashboard"))
+        return render_template("login.html", error=None, username="", selected_role="student")
+
+    @app.get("/student/login")
+    def legacy_student_login():
+        return redirect(url_for("login"))
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        session["csrf_token"] = secrets.token_urlsafe(24)
+        flash("You have been signed out.", "success")
+        return redirect(url_for("login"))
+
+    @app.post("/student/logout")
+    def legacy_student_logout():
+        return logout()
+
+    @app.route("/change-password", methods=["GET", "POST"])
+    def change_password():
+        user = current_user()
+        if request.method == "POST":
+            old_password = request.form.get("current_password", "")
+            new_password = request.form.get("new_password", "")
+            confirmation = request.form.get("confirm_password", "")
+            error = None
+            if not check_password_hash(user["password_hash"], old_password):
+                error = "Current password is incorrect."
+            elif len(new_password) < 8:
+                error = "New password must contain at least 8 characters."
+            elif new_password != confirmation:
+                error = "New password and confirmation do not match."
+            elif check_password_hash(user["password_hash"], new_password):
+                error = "Choose a password different from your current password."
+            if error:
+                return render_template("change_password.html", error=error), 400
+            password_hash = generate_password_hash(new_password)
+            if user["role"] == "student":
+                database.update_student_password(int(user["id"]), password_hash)
+            else:
+                database.update_staff_password(int(user["id"]), password_hash)
+            credential_file = Path(app.config["DEMO_CREDENTIAL_DIRECTORY"]) / (
+                "student_demo_credentials.txt" if user["role"] == "student"
+                else f"{user['role']}_demo_credentials.txt"
+            )
+            credential_file.unlink(missing_ok=True)
+            flash("Password changed successfully. The old demo credential file was removed.", "success")
+            return redirect(url_for("student_portal" if user["role"] == "student" else "dashboard"))
+        return render_template("change_password.html", error=None)
+
+    @app.get("/student")
+    def student_portal():
+        student_account = current_user()
+        report = database.student_portal_data(int(student_account["student_id"]))
+        memberships = database.student_group_ids(int(student_account["student_id"]))
+        upcoming = [row for row in timetable.upcoming() if int(row["group_id"]) in memberships]
+        return render_template(
+            "student_portal.html", account=student_account, report=report,
+            upcoming=upcoming[:12],
+        )
 
     @app.get("/")
     def dashboard():
@@ -634,7 +828,7 @@ def create_app(
     return app
 
 
-app = create_app()
+app = create_app(enable_demo_logins=__name__ == "__main__")
 
 if __name__ == "__main__":
     scheduler = app.extensions["timetable_scheduler"]

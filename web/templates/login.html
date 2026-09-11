@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · AttendAI</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar"><div class="brand"><span class="brand-mark">A</span><span>AttendAI</span></div></header>
+  <main class="page student-page">
+    <section class="login-shell">
+      <div class="login-copy">
+        <p class="eyebrow">Attendance platform</p>
+        <h1>Welcome back.</h1>
+        <p>Administrators and faculty manage attendance operations. Students securely view only their own records and upcoming classes.</p>
+      </div>
+      <form class="panel form-card login-card" method="post" autocomplete="on">
+        <h2>Sign in</h2>
+        <p class="muted">Choose your account type and enter your credentials.</p>
+        {% if error %}<div class="flash error" role="alert">{{ error }}</div>{% endif %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <fieldset class="role-picker">
+          <legend>Account type</legend>
+          {% for value, label in [('admin','Admin'),('faculty','Faculty'),('student','Student')] %}
+          <label><input type="radio" name="role" value="{{ value }}" {% if selected_role == value %}checked{% endif %} required><span>{{ label }}</span></label>
+          {% endfor %}
+        </fieldset>
+        <label>Username<input name="username" value="{{ username }}" maxlength="80" autocomplete="username" required autofocus></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="button primary full" type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
